@@ -216,7 +216,7 @@ def make_fig(edges, pos, node_states, n_total, model_name,
         else:                 ex_n+=[x0,x1,None]; ey_n+=[y0,y1,None]
 
     traces = [go.Scatter(x=ex_n,y=ey_n,mode="lines",
-                         line=dict(width=1.2,color=accent),opacity=0.22,hoverinfo="none")]
+                         line=dict(width=2.0,color=accent),opacity=0.5,hoverinfo="none")]
     if ex_h:
         traces.append(go.Scatter(x=ex_h,y=ey_h,mode="lines",
                                  line=dict(width=3.5,color="#ffdd44"),opacity=0.80,hoverinfo="none"))
