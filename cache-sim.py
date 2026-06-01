@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import numpy as np
 
 # ─── ページ設定 ───────────────────────────────────────────────
-st.set_page_config(page_title="Network Graph Explorer", page_icon="🕸️", layout="centered")
+st.set_page_config(page_title="Cache simulator", page_icon="🕸️", layout="centered")
 
 # ─── CSS ─────────────────────────────────────────────────────
 st.markdown("""
@@ -70,7 +70,7 @@ def _init():
 _init()
 
 # ─── タイトル ────────────────────────────────────────────────
-st.markdown("## 🕸️ Network Graph Explorer")
+st.markdown("## 🕸️ Cache Simulator")
 st.markdown("<p style='font-family:Space Mono,monospace;font-size:0.78rem;"
             "color:#555577;margin-top:-.5rem;'>"
             "BA / Scale-Free · Orig / Cache / Nothing · shortest path finder</p>",
@@ -154,15 +154,40 @@ def layout(G):
 # ─── 最短経路 ────────────────────────────────────────────────
 def shortest_paths(edges, n_total, node_states, source, target_type):
     G = nx.Graph(); G.add_nodes_from(range(n_total)); G.add_edges_from(edges)
-    if target_type == "Cache or Orig":
-        targets = [i for i,s in node_states.items() if s in ("Orig","Cache") and i!=source]
+
+    def is_target(s):
+        return s in ("Orig","Cache") if target_type=="Cache or Orig" else s==target_type
+
+    if source == "all":
+        # 各ソースノードから最も近いターゲット1件のみ：(src, tgt, path) のリスト
+        targets = sorted([i for i,s in node_states.items() if is_target(s)])
+        results = []
+        for src in range(n_total):
+            if src in targets:
+                # 自身がターゲット → 0ホップで確定
+                results.append((src, src, [src]))
+                continue
+            best_path, best_tgt, best_len = None, None, float("inf")
+            for tgt in targets:
+                try:
+                    p = nx.shortest_path(G, src, tgt)
+                    if len(p) < best_len:
+                        best_len, best_tgt, best_path = len(p), tgt, p
+                except:
+                    pass
+            results.append((src, best_tgt, best_path))  # best_tgt/path は None の場合もあり
+        return results
     else:
-        targets = [i for i,s in node_states.items() if s==target_type and i!=source]
-    results = []
-    for t in sorted(targets):
-        try:    results.append((t, nx.shortest_path(G,source,t)))
-        except: results.append((t, None))
-    return results
+        # 単一ソース
+        # ソース自身がターゲット状態なら 0ホップとして先頭に追加
+        results = []
+        if is_target(node_states.get(source, "Nothing")):
+            results.append((source, [source]))
+        targets = [i for i,s in node_states.items() if is_target(s) and i!=source]
+        for t in sorted(targets):
+            try:    results.append((t, nx.shortest_path(G, source, t)))
+            except: results.append((t, None))
+        return results
 
 # ─── Plotly図 ────────────────────────────────────────────────
 def make_fig(edges, pos, node_states, n_total, model_name,
@@ -217,24 +242,40 @@ def make_fig(edges, pos, node_states, n_total, model_name,
                         opacity=0.95),
             text=[str(it[0]) for it in items],
             textposition="middle center",
-            textfont=dict(size=10,color=tcolor,family="Space Mono"),
+            textfont=dict(size=20,color=tcolor,family="Space Mono"),
             hovertemplate=f"Node %{{text}}  [{name}]<extra></extra>",
             name=name,
         )
 
-    # source: 星
-    si = buckets["source"]
-    if si:
-        i,x,y,sz,st_ = si[0]
-        fill  = S_COLORS[st_]
-        bord  = "#ff8844"
-        tclr  = S_TEXT[st_] if st_!="Nothing" else "#ff8844"
-        traces.append(go.Scatter(x=[x],y=[y],mode="markers+text",
-            marker=dict(size=sz+10,color=fill,symbol="star",
-                        line=dict(width=3,color=bord),opacity=0.98),
-            text=[str(i)],textposition="middle center",
-            textfont=dict(size=11,color=tclr,family="Space Mono"),
-            hovertemplate=f"Node {i} [SOURCE / {st_}]<extra></extra>",name="SOURCE"))
+    # source: 星 (single) or 経路出発ノード群 (all)
+    if source == "all":
+        path_sources = sorted(set(path[0] for path in highlight_paths if path and len(path)>1))
+        if path_sources:
+            ps_items = [(i, *pos[i], 22+30*(deg[i]/max(max_d,1))**0.6,
+                         node_states.get(i,"Nothing")) for i in path_sources]
+            traces.append(go.Scatter(
+                x=[it[1] for it in ps_items], y=[it[2] for it in ps_items],
+                mode="markers+text",
+                marker=dict(size=[it[3]+6 for it in ps_items], color="rgba(0,0,0,0)",
+                            symbol="star", line=dict(width=2.5, color="#ff8844"), opacity=0.90),
+                text=[str(it[0]) for it in ps_items],
+                textposition="middle center",
+                textfont=dict(size=10, color="#ff8844", family="Space Mono"),
+                hovertemplate="Node %{text} [path source]<extra></extra>",
+                name="PATH_SRC"))
+    else:
+        si = buckets["source"]
+        if si:
+            i,x,y,sz,st_ = si[0]
+            fill  = S_COLORS[st_]
+            bord  = "#ff8844"
+            tclr  = S_TEXT[st_] if st_!="Nothing" else "#ff8844"
+            traces.append(go.Scatter(x=[x],y=[y],mode="markers+text",
+                marker=dict(size=sz+10,color=fill,symbol="star",
+                            line=dict(width=3,color=bord),opacity=0.98),
+                text=[str(i)],textposition="middle center",
+                textfont=dict(size=11,color=tclr,family="Space Mono"),
+                hovertemplate=f"Node {i} [SOURCE / {st_}]<extra></extra>",name="SOURCE"))
 
     t=mk_trace(buckets["Orig"],  S_COLORS["Orig"],  S_BORDER["Orig"],  S_TEXT["Orig"],  "Orig")
     if t: traces.append(t)
@@ -263,51 +304,83 @@ def make_fig(edges, pos, node_states, n_total, model_name,
 
 # ─── 経路テキスト ─────────────────────────────────────────────
 def render_paths(results, source, target_type, node_states):
-    src_st = node_states.get(source,"Nothing")
     tcolor = {"Orig":"#ff6644","Cache":"#44ddaa","Cache or Orig":"#ffcc44","Nothing":"#9988cc"}
     tc     = tcolor.get(target_type, "#ffcc44")
+    is_all = source == "all"
 
-    if not results:
-        targets_exist = any(
-            (s in ("Orig","Cache") if target_type=="Cache or Orig" else s==target_type)
-            and i!=source for i,s in node_states.items())
+    if not is_all:
+        src_st    = node_states.get(source, "Nothing")
+        src_label = f"★Node {source} [{src_st}]"
+    else:
+        src_label = "All nodes (static)"
+
+    if not results or (is_all and all(tgt is None for _, tgt, *_ in results)):
+        def _any_target(i, s):
+            if target_type == "Cache or Orig": return s in ("Orig","Cache")
+            return s == target_type
+        targets_exist = any(_any_target(i,s) for i,s in node_states.items()
+                            if (True if is_all else i!=source))
         msg = (f"<span class='no-path'>{target_type} ノードがありません。</span>"
                if not targets_exist else
                f"<span class='no-path'>到達可能な {target_type} ノードがありません。</span>")
         st.markdown(f"<div class='path-card'>"
                     f"<div class='path-title'>📡 Paths to <span style='color:{tc}'>{target_type}</span> "
-                    f"from ★Node {source}</div>{msg}</div>",unsafe_allow_html=True)
+                    f"from {src_label}</div>{msg}</div>", unsafe_allow_html=True)
         return
 
-    lines=[]
-    for tgt,path in results:
+    def fmt_path(src_node, tgt, path):
+        """(src, tgt, path) を1行のHTML文字列に変換"""
+        if tgt is None:
+            # ターゲット自体が存在しない（全ノードがNothing等）
+            return (f"<span style='color:#ff8844;font-weight:700'>★{src_node}</span>"
+                    f" <span style='color:#cc4444'>(ターゲットなし)</span>")
         if path is None:
-            lines.append(f"<span style='color:{tc}'>◆Node {tgt}</span> &nbsp;→&nbsp; "
-                         f"<span class='no-path'>経路なし</span>")
-        else:
-            hops=len(path)-1
-            parts=[]
-            for nid in path:
-                ns=node_states.get(nid,"Nothing")
-                if nid==source:
-                    c="#ff8844"; lbl=f"★{nid}"
-                elif nid==tgt:
-                    c=tc; lbl=f"◆{nid}"
-                else:
-                    c="#ccccee"; lbl=str(nid)
-                parts.append(f"<span style='color:{c};font-weight:700'>{lbl}</span>")
-            arr="<span style='color:#44dd44'> → </span>"
-            lines.append(arr.join(parts)+
-                         f" <span style='color:#444466;font-size:.73rem;'>"
-                         f"({hops} hop{'s' if hops!=1 else ''})</span>")
+            return (f"<span style='color:#ff8844;font-weight:700'>★{src_node}</span>"
+                    f"<span style='color:#44dd44'> → </span>"
+                    f"<span style='color:{tc}'>◆{tgt}</span>"
+                    f" <span style='color:#cc4444'>(経路なし)</span>")
+        hops = len(path) - 1
+        if hops == 0:
+            return (f"<span style='color:{tc};font-weight:700'>◆{tgt}</span>"
+                    f" <span style='color:#444466;font-size:.73rem;'>(0 hops — self)</span>")
+        parts = []
+        for nid in path:
+            if nid == src_node:
+                c = "#ff8844"; lbl = f"★{nid}"
+            elif nid == tgt:
+                c = tc; lbl = f"◆{nid}"
+            else:
+                c = "#ccccee"; lbl = str(nid)
+            parts.append(f"<span style='color:{c};font-weight:700'>{lbl}</span>")
+        arr = "<span style='color:#44dd44'> → </span>"
+        return arr.join(parts) + (f" <span style='color:#444466;font-size:.73rem;'>"
+                                   f"({hops} hop{'s' if hops!=1 else ''})</span>")
 
-    st.markdown(
-        f"<div class='path-card'>"
-        f"<div class='path-title'>📡 Shortest Paths &nbsp; ★Node {source} "
-        f"[{src_st}] &nbsp;→&nbsp; "
-        f"<span style='color:{tc}'>{target_type}</span> nodes</div>"
-        + "<br>".join(lines) + "</div>",
-        unsafe_allow_html=True)
+    if not is_all:
+        # 単一ソース: フラットなリスト (tgt, path)
+        lines = [fmt_path(source, tgt, path) for tgt, path in results]
+        st.markdown(
+            f"<div class='path-card'>"
+            f"<div class='path-title'>📡 Shortest Paths &nbsp; {src_label} &nbsp;→&nbsp; "
+            f"<span style='color:{tc}'>{target_type}</span> nodes</div>"
+            + "<br>".join(lines) + "</div>",
+            unsafe_allow_html=True)
+    else:
+        # All (static): ソースノードごとに1行、最近傍ターゲット1件のみ表示
+        lines = []
+        for src_node, tgt, path in results:
+            src_st = node_states.get(src_node, "Nothing")
+            sc     = {"Orig":"#ff6644","Cache":"#44ddaa"}.get(src_st, "#ff8844")
+            src_span = (f"<span style='color:#ff8844;font-weight:700'>★{src_node}</span>"
+                        f"<span style='color:{sc};font-size:.74rem;'>[{src_st}]</span>")
+            lines.append(src_span + "  " + fmt_path(src_node, tgt, path))
+
+        st.markdown(
+            f"<div class='path-card'>"
+            f"<div class='path-title'>📡 All nodes (static) &nbsp;→&nbsp; "
+            f"<span style='color:{tc}'>{target_type}</span> (nearest)</div>"
+            + "<br>".join(lines) + "</div>",
+            unsafe_allow_html=True)
 
 # ─── Draw / Regen ─────────────────────────────────────────────
 st.divider()
@@ -373,9 +446,13 @@ if st.session_state.graph_drawn:
     # コントロール行
     cc1, cc2, cc3 = st.columns([1.2, 1, 1])
     with cc1:
-        src = st.selectbox("出発ノード (★)", list(range(n_total)),
-                           index=st.session_state.source_node,
-                           format_func=lambda x:f"Node {x}", key="_src")
+        src_options = ["all"] + list(range(n_total))
+        cur_src = st.session_state.source_node
+        src_idx = src_options.index(cur_src) if cur_src in src_options else 1
+        src = st.selectbox(
+            "出発ノード (★)", src_options, index=src_idx,
+            format_func=lambda x: "All (static)" if x=="all" else f"Node {x}",
+            key="_src")
         st.session_state.source_node = src
     with cc2:
         TARGET_OPTIONS = ["Orig", "Cache or Orig", "Cache"]
@@ -400,7 +477,10 @@ if st.session_state.graph_drawn:
     # 経路計算
     path_results   = shortest_paths(st.session_state.graph_edges, n_total,
                                     st.session_state.node_states, src, ttype)
-    highlight_paths = [p for _,p in path_results if p]
+    if src == 'all':
+        highlight_paths = [p for _,_,p in path_results if p]
+    else:
+        highlight_paths = [p for _,p in path_results if p]
 
     # 図
     fig = make_fig(st.session_state.graph_edges, pos_dict,
@@ -410,7 +490,7 @@ if st.session_state.graph_drawn:
     event = st.plotly_chart(fig, use_container_width=True,
                             on_select="rerun", key="net_plot")
 
-    # クリック処理 — trace順を再現してnode_id逆引き
+    # クリック処理 — make_fig と同じtrace順を再現してnode_id逆引き
     if event and event.get("selection"):
         points = event["selection"].get("points",[])
         for pt in points:
@@ -422,34 +502,52 @@ if st.session_state.graph_drawn:
             path_nodes_set = set()
             for path in highlight_paths: path_nodes_set.update(path)
 
-            has_path_edges = len(highlight_paths)>0
-            edge_tc = 2 if has_path_edges else 1   # エッジtrace数
+            # ── make_fig と同じ順でtraceを積む ──────────────────────
+            # trace 0: 通常エッジ (常に1本)
+            # trace 1: 強調エッジ (highlight_pathsがある場合のみ)
+            has_path_edges = len(highlight_paths) > 0
+            ci = 2 if has_path_edges else 1
 
-            # traceリスト再構築
             trace_node_lists = []
-            ci = edge_tc
-            # source (必ず1つ)
-            trace_node_lists.append((ci,[src])); ci+=1
-            # Orig
-            orig_l = sorted([i for i in range(n_total) if states.get(i,"Nothing")=="Orig" and i!=src])
-            if orig_l: trace_node_lists.append((ci,orig_l)); ci+=1
-            # Cache
-            cach_l = sorted([i for i in range(n_total) if states.get(i,"Nothing")=="Cache" and i!=src])
-            if cach_l: trace_node_lists.append((ci,cach_l)); ci+=1
-            # waypoint (Nothing & in path)
+
+            if src == "all":
+                # make_fig: source=="all" → PATH_SRC (path_sources が空でなければ)
+                path_sources = sorted(set(
+                    path[0] for path in highlight_paths if path and len(path) > 1))
+                if path_sources:
+                    trace_node_lists.append((ci, path_sources)); ci += 1
+            else:
+                # make_fig: source != "all" → source ノード1つ (star)
+                trace_node_lists.append((ci, [src])); ci += 1
+
+            # Orig (source以外)
+            orig_l = sorted([i for i in range(n_total)
+                             if states.get(i,"Nothing")=="Orig"
+                             and (True if src=="all" else i!=src)])
+            if orig_l: trace_node_lists.append((ci, orig_l)); ci += 1
+            # Cache (source以外)
+            cach_l = sorted([i for i in range(n_total)
+                             if states.get(i,"Nothing")=="Cache"
+                             and (True if src=="all" else i!=src)])
+            if cach_l: trace_node_lists.append((ci, cach_l)); ci += 1
+            # waypoint: Nothing & in path_nodes_set (source以外)
             wp_l = sorted([i for i in range(n_total)
-                           if states.get(i,"Nothing")=="Nothing" and i in path_nodes_set and i!=src])
-            if wp_l: trace_node_lists.append((ci,wp_l)); ci+=1
-            # Nothing
+                           if states.get(i,"Nothing")=="Nothing"
+                           and i in path_nodes_set
+                           and (True if src=="all" else i!=src)])
+            if wp_l: trace_node_lists.append((ci, wp_l)); ci += 1
+            # Nothing: それ以外
             no_l = sorted([i for i in range(n_total)
-                           if states.get(i,"Nothing")=="Nothing" and i not in path_nodes_set and i!=src])
-            if no_l: trace_node_lists.append((ci,no_l)); ci+=1
+                           if states.get(i,"Nothing")=="Nothing"
+                           and i not in path_nodes_set
+                           and (True if src=="all" else i!=src)])
+            if no_l: trace_node_lists.append((ci, no_l)); ci += 1
 
             for curve_ci, node_list in trace_node_lists:
-                if cn==curve_ci and pidx<len(node_list):
+                if cn == curve_ci and pidx < len(node_list):
                     nid = node_list[pidx]
-                    cur = states.get(nid,"Nothing")
-                    nxt = STATES[(STATES.index(cur)+1)%len(STATES)]
+                    cur = states.get(nid, "Nothing")
+                    nxt = STATES[(STATES.index(cur)+1) % len(STATES)]
                     st.session_state.node_states[nid] = nxt
                     st.rerun()
 
