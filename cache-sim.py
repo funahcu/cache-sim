@@ -63,7 +63,8 @@ def _init():
     defs = dict(model_type="BA Model", node_states={}, graph_edges=[],
                 graph_pos={}, graph_drawn=False, last_n_nodes=0,
                 last_n_links=0, last_model="", source_node=0,
-                target_type="Orig", regen_seed=42)
+                target_type="Orig", regen_seed=42,
+                sim_results=[], sim_initial_states={}, sim_create_cache=True)
     for k, v in defs.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -151,43 +152,86 @@ def layout(G):
     try:    return nx.kamada_kawai_layout(G)
     except: return nx.spring_layout(G,seed=42,k=2.5/n**0.5,iterations=120)
 
-# ─── 最短経路 ────────────────────────────────────────────────
+# ─── 最短経路ヘルパー ────────────────────────────────────────
+def _is_target(state, target_type):
+    """ノード状態がターゲットタイプに合致するか"""
+    if target_type == "Cache or Orig": return state in ("Orig", "Cache")
+    return state == target_type
+
+def _nearest_target(G, src, targets, node_states):
+    """src から最も近いターゲット1件を返す (tgt, path)。なければ (None, None)"""
+    if src in targets:
+        return src, [src]                          # 0ホップ
+    best_path, best_tgt, best_len = None, None, float("inf")
+    for tgt in targets:
+        try:
+            p = nx.shortest_path(G, src, tgt)
+            if len(p) < best_len:
+                best_len, best_tgt, best_path = len(p), tgt, p
+        except:
+            pass
+    return best_tgt, best_path
+
 def shortest_paths(edges, n_total, node_states, source, target_type):
     G = nx.Graph(); G.add_nodes_from(range(n_total)); G.add_edges_from(edges)
+    targets = sorted([i for i,s in node_states.items()
+                      if _is_target(s, target_type)])
 
-    def is_target(s):
-        return s in ("Orig","Cache") if target_type=="Cache or Orig" else s==target_type
-
-    if source == "all":
-        # 各ソースノードから最も近いターゲット1件のみ：(src, tgt, path) のリスト
-        targets = sorted([i for i,s in node_states.items() if is_target(s)])
+    if source in ("all_static", "all_dynamic"):
+        # 各ソースノードから最近傍ターゲット1件：(src, tgt, path) のリスト
         results = []
         for src in range(n_total):
-            if src in targets:
-                # 自身がターゲット → 0ホップで確定
-                results.append((src, src, [src]))
-                continue
-            best_path, best_tgt, best_len = None, None, float("inf")
-            for tgt in targets:
-                try:
-                    p = nx.shortest_path(G, src, tgt)
-                    if len(p) < best_len:
-                        best_len, best_tgt, best_path = len(p), tgt, p
-                except:
-                    pass
-            results.append((src, best_tgt, best_path))  # best_tgt/path は None の場合もあり
+            tgt, path = _nearest_target(G, src, targets, node_states)
+            results.append((src, tgt, path))
         return results
     else:
-        # 単一ソース
-        # ソース自身がターゲット状態なら 0ホップとして先頭に追加
+        # 単一ソース：ソース自身が対象なら 0ホップ先頭、残りを列挙
         results = []
-        if is_target(node_states.get(source, "Nothing")):
+        if _is_target(node_states.get(source, "Nothing"), target_type):
             results.append((source, [source]))
-        targets = [i for i,s in node_states.items() if is_target(s) and i!=source]
-        for t in sorted(targets):
+        for t in sorted([i for i,s in node_states.items()
+                         if _is_target(s, target_type) and i != source]):
             try:    results.append((t, nx.shortest_path(G, source, t)))
             except: results.append((t, None))
         return results
+
+# ─── Dynamic シミュレーション ─────────────────────────────────
+def run_simulation(edges, n_total, initial_states, target_type,
+                   order, create_cache):
+    """
+    order に従い各ノードを starting node として順に処理する。
+    各ステップで最近傍ターゲットへの最短経路を求め、
+    create_cache=True なら経路上の Nothing ノードを Cache に変更する。
+    戻り値: (sim_results, final_states)
+      sim_results: [{"step", "src", "tgt", "path", "cached"}, ...]
+      final_states: シミュレーション後の node_states
+    """
+    G = nx.Graph(); G.add_nodes_from(range(n_total)); G.add_edges_from(edges)
+    working = initial_states.copy()
+    sim_results = []
+    for step, src in enumerate(order):
+        targets = sorted([i for i,s in working.items()
+                          if _is_target(s, target_type)])
+        tgt, path = _nearest_target(G, src, targets, working)
+        newly_cached = []
+        if create_cache and path:
+            for nid in path:
+                if working[nid] == "Nothing":
+                    working[nid] = "Cache"
+                    newly_cached.append(nid)
+        sim_results.append({"step": step, "src": src, "tgt": tgt,
+                            "path": path, "cached": newly_cached})
+    return sim_results, working
+
+def replay_states(initial_states, sim_results, create_cache, up_to_step):
+    """initial_states + sim_results から up_to_step 実行後の状態を再現する"""
+    working = initial_states.copy()
+    for r in sim_results[:up_to_step + 1]:
+        if create_cache and r["path"]:
+            for nid in r["path"]:
+                if working[nid] == "Nothing":
+                    working[nid] = "Cache"
+    return working
 
 # ─── Plotly図 ────────────────────────────────────────────────
 def make_fig(edges, pos, node_states, n_total, model_name,
@@ -248,7 +292,7 @@ def make_fig(edges, pos, node_states, n_total, model_name,
         )
 
     # source: 星 (single) or 経路出発ノード群 (all)
-    if source == "all":
+    if source in ("all_static", "all_dynamic"):
         path_sources = sorted(set(path[0] for path in highlight_paths if path and len(path)>1))
         if path_sources:
             ps_items = [(i, *pos[i], 22+30*(deg[i]/max(max_d,1))**0.6,
@@ -306,15 +350,17 @@ def make_fig(edges, pos, node_states, n_total, model_name,
 def render_paths(results, source, target_type, node_states):
     tcolor = {"Orig":"#ff6644","Cache":"#44ddaa","Cache or Orig":"#ffcc44","Nothing":"#9988cc"}
     tc     = tcolor.get(target_type, "#ffcc44")
-    is_all = source == "all"
+    is_all = source in ("all_static", "all_dynamic")
 
     if not is_all:
         src_st    = node_states.get(source, "Nothing")
         src_label = f"★Node {source} [{src_st}]"
+    elif source == "all_dynamic":
+        src_label = "All nodes (dynamic)"
     else:
         src_label = "All nodes (static)"
 
-    if not results or (is_all and all(tgt is None for _, tgt, *_ in results)):
+    if not results or (is_all and all(r[1] is None for r in results)):
         def _any_target(i, s):
             if target_type == "Cache or Orig": return s in ("Orig","Cache")
             return s == target_type
@@ -375,12 +421,59 @@ def render_paths(results, source, target_type, node_states):
                         f"<span style='color:{sc};font-size:.74rem;'>[{src_st}]</span>")
             lines.append(src_span + "  " + fmt_path(src_node, tgt, path))
 
+        mode_label = "dynamic" if source == "all_dynamic" else "static"
         st.markdown(
             f"<div class='path-card'>"
-            f"<div class='path-title'>📡 All nodes (static) &nbsp;→&nbsp; "
+            f"<div class='path-title'>📡 All nodes ({mode_label}) &nbsp;→&nbsp; "
             f"<span style='color:{tc}'>{target_type}</span> (nearest)</div>"
             + "<br>".join(lines) + "</div>",
             unsafe_allow_html=True)
+
+# ─── Dynamic 結果テキスト表示 ────────────────────────────────
+def render_sim_results(sim_results, target_type, node_states_final):
+    """run_simulation の結果をステップごとに1行表示"""
+    tcolor = {"Orig":"#ff6644","Cache":"#44ddaa","Cache or Orig":"#ffcc44"}
+    tc     = tcolor.get(target_type, "#ffcc44")
+    lines  = []
+    for r in sim_results:
+        src_node = r["src"]
+        tgt      = r["tgt"]
+        path     = r["path"]
+        cached   = r["cached"]
+        src_st   = node_states_final.get(src_node, "Nothing")
+        sc       = {"Orig":"#ff6644","Cache":"#44ddaa"}.get(src_st, "#ff8844")
+        src_span = (f"<span style='color:#ff8844;font-weight:700'>★{src_node}</span>"
+                    f"<span style='color:{sc};font-size:.74rem;'>[{src_st}]</span>")
+        if tgt is None:
+            row = src_span + f"  <span style='color:#cc4444'>(ターゲットなし)</span>"
+        elif path is None:
+            row = src_span + f"  <span style='color:#cc4444'>(経路なし)</span>"
+        else:
+            hops = len(path) - 1
+            if hops == 0:
+                row = (src_span + f"  <span style='color:{tc};font-weight:700'>◆{tgt}</span>"
+                       f" <span style='color:#444466;font-size:.73rem;'>(0 hops — self)</span>")
+            else:
+                parts = []
+                for nid in path:
+                    if nid == src_node: c, lbl = "#ff8844", f"★{nid}"
+                    elif nid == tgt:    c, lbl = tc, f"◆{nid}"
+                    else:               c, lbl = "#ccccee", str(nid)
+                    parts.append(f"<span style='color:{c};font-weight:700'>{lbl}</span>")
+                arr = "<span style='color:#44dd44'> → </span>"
+                row = src_span + "  " + arr.join(parts) + (
+                    f" <span style='color:#444466;font-size:.73rem;'>"
+                    f"({hops} hop{'s' if hops!=1 else ''})</span>")
+        if cached:
+            row += (f" <span style='color:#44ddaa;font-size:.72rem;'>"
+                    f"[→Cache: {','.join(str(n) for n in cached)}]</span>")
+        lines.append(row)
+    st.markdown(
+        f"<div class='path-card'>"
+        f"<div class='path-title'>📡 Dynamic simulation &nbsp;→&nbsp; "
+        f"<span style='color:{tc}'>{target_type}</span></div>"
+        + "<br>".join(lines) + "</div>",
+        unsafe_allow_html=True)
 
 # ─── Draw / Regen ─────────────────────────────────────────────
 st.divider()
@@ -413,6 +506,8 @@ def do_generate(seed):
     st.session_state.last_model   = model
     st.session_state.source_node  = 0
     st.session_state.regen_seed   = seed
+    st.session_state.sim_results        = []
+    st.session_state.sim_initial_states = {}
 
 if draw_clicked:
     with st.spinner("Generating…"):
@@ -446,12 +541,14 @@ if st.session_state.graph_drawn:
     # コントロール行
     cc1, cc2, cc3 = st.columns([1.2, 1, 1])
     with cc1:
-        src_options = ["all"] + list(range(n_total))
+        src_options = ["all_static", "all_dynamic"] + list(range(n_total))
         cur_src = st.session_state.source_node
-        src_idx = src_options.index(cur_src) if cur_src in src_options else 1
+        if cur_src == "all": cur_src = "all_static"   # 旧値の移行
+        src_idx = src_options.index(cur_src) if cur_src in src_options else 2
         src = st.selectbox(
             "出発ノード (★)", src_options, index=src_idx,
-            format_func=lambda x: "All (static)" if x=="all" else f"Node {x}",
+            format_func=lambda x: {"all_static":"All (static)",
+                                   "all_dynamic":"All (dynamic)"}.get(x, f"Node {x}"),
             key="_src")
         st.session_state.source_node = src
     with cc2:
@@ -474,13 +571,36 @@ if st.session_state.graph_drawn:
                 for k in st.session_state.node_states: st.session_state.node_states[k]="Nothing"
                 st.rerun()
 
+    # Dynamic モードのオプションと実行ボタン
+    if src == "all_dynamic":
+        with st.expander("⚙️ Dynamic options", expanded=True):
+            st.session_state.sim_create_cache = st.checkbox(
+                "経路上の Nothing ノードを Cache に変更する",
+                value=st.session_state.sim_create_cache)
+        if st.button("▶▶  Run Simulation", type="primary", use_container_width=True):
+            order = list(range(n_total))   # 将来: 順序オプションをここで差し替え
+            sim_results, final_states = run_simulation(
+                st.session_state.graph_edges, n_total,
+                st.session_state.node_states, ttype,
+                order, st.session_state.sim_create_cache)
+            st.session_state.sim_results        = sim_results
+            st.session_state.sim_initial_states = st.session_state.node_states.copy()
+            st.session_state.node_states        = final_states
+            st.rerun()
+
     # 経路計算
-    path_results   = shortest_paths(st.session_state.graph_edges, n_total,
-                                    st.session_state.node_states, src, ttype)
-    if src == 'all':
-        highlight_paths = [p for _,_,p in path_results if p]
+    if src == "all_dynamic" and st.session_state.sim_results:
+        # Dynamic: シミュレーション結果を使う
+        path_results    = [(r["src"], r["tgt"], r["path"])
+                           for r in st.session_state.sim_results]
+        highlight_paths = [r["path"] for r in st.session_state.sim_results if r["path"]]
     else:
-        highlight_paths = [p for _,p in path_results if p]
+        path_results = shortest_paths(st.session_state.graph_edges, n_total,
+                                      st.session_state.node_states, src, ttype)
+        if src in ("all_static", "all_dynamic"):
+            highlight_paths = [p for _,_,p in path_results if p]
+        else:
+            highlight_paths = [p for _,p in path_results if p]
 
     # 図
     fig = make_fig(st.session_state.graph_edges, pos_dict,
@@ -510,8 +630,8 @@ if st.session_state.graph_drawn:
 
             trace_node_lists = []
 
-            if src == "all":
-                # make_fig: source=="all" → PATH_SRC (path_sources が空でなければ)
+            if src in ("all_static", "all_dynamic"):
+                # make_fig: source in all → PATH_SRC (path_sources が空でなければ)
                 path_sources = sorted(set(
                     path[0] for path in highlight_paths if path and len(path) > 1))
                 if path_sources:
@@ -523,12 +643,12 @@ if st.session_state.graph_drawn:
             # Orig (source以外)
             orig_l = sorted([i for i in range(n_total)
                              if states.get(i,"Nothing")=="Orig"
-                             and (True if src=="all" else i!=src)])
+                             and (True if src in ("all_static","all_dynamic") else i!=src)])
             if orig_l: trace_node_lists.append((ci, orig_l)); ci += 1
             # Cache (source以外)
             cach_l = sorted([i for i in range(n_total)
                              if states.get(i,"Nothing")=="Cache"
-                             and (True if src=="all" else i!=src)])
+                             and (True if src in ("all_static","all_dynamic") else i!=src)])
             if cach_l: trace_node_lists.append((ci, cach_l)); ci += 1
             # waypoint: Nothing & in path_nodes_set (source以外)
             wp_l = sorted([i for i in range(n_total)
@@ -552,7 +672,11 @@ if st.session_state.graph_drawn:
                     st.rerun()
 
     # 経路テキスト
-    render_paths(path_results, src, ttype, st.session_state.node_states)
+    if src == "all_dynamic" and st.session_state.sim_results:
+        render_sim_results(st.session_state.sim_results, ttype,
+                           st.session_state.node_states)
+    else:
+        render_paths(path_results, src, ttype, st.session_state.node_states)
 
     # 統計
     cnt = {s:sum(1 for v in st.session_state.node_states.values() if v==s) for s in STATES}
