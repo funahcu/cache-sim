@@ -64,7 +64,8 @@ def _init():
                 graph_pos={}, graph_drawn=False, last_n_nodes=0,
                 last_n_links=0, last_model="", source_node=0,
                 target_type="Orig", regen_seed=42,
-                sim_results=[], sim_initial_states={}, sim_create_cache=True)
+                sim_results=[], sim_initial_states={}, sim_create_cache=True,
+                sim_order=[], sim_rand_steps=10, sim_gen_mode=0)
     for k, v in defs.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -216,7 +217,7 @@ def run_simulation(edges, n_total, initial_states, target_type,
         newly_cached = []
         if create_cache and path:
             for nid in path:
-                if working[nid] == "Nothing":
+                if working[nid] == "Nothing":  # Orig は上書きしない
                     working[nid] = "Cache"
                     newly_cached.append(nid)
         sim_results.append({"step": step, "src": src, "tgt": tgt,
@@ -265,17 +266,26 @@ def make_fig(edges, pos, node_states, n_total, model_name,
         traces.append(go.Scatter(x=ex_h,y=ey_h,mode="lines",
                                  line=dict(width=3.5,color="#ffdd44"),opacity=0.80,hoverinfo="none"))
 
-    # ノードをバケツ分け (source / Orig / Cache / Nothing+waypoint / Nothing)
+    # PATH_SRC: all モードで経路出発点（2ホップ以上）→ 専用トレースに使い、他バケツから除外
+    if source in ("all_static", "all_dynamic"):
+        path_sources_set = set(
+            path[0] for path in highlight_paths if path and len(path) > 1)
+    else:
+        path_sources_set = set()
+
+    # ノードをバケツ分け (source / Orig / Cache / waypoint / Nothing)
+    # PATH_SRC ノードは path_sources_set に入るため他バケツから除外する    
     buckets = {"source":[], "Orig":[], "Cache":[], "waypoint":[], "Nothing":[]}
     for i in range(n_total):
         x,y=pos[i]; sz=22+30*(deg[i]/max(max_d,1))**0.6
         st_ = node_states.get(i,"Nothing")
-        if i==source:       buckets["source"].append((i,x,y,sz,st_))
-        elif st_=="Orig":   buckets["Orig"].append((i,x,y,sz,st_))
-        elif st_=="Cache":  buckets["Cache"].append((i,x,y,sz,st_))
-        elif i in path_nodes: buckets["waypoint"].append((i,x,y,sz,st_))
-        else:               buckets["Nothing"].append((i,x,y,sz,st_))
-
+        if i in path_sources_set: continue          # PATH_SRC 専用トレースで描画
+        if i==source:             buckets["source"].append((i,x,y,sz,st_))
+        elif st_=="Orig":         buckets["Orig"].append((i,x,y,sz,st_))
+        elif st_=="Cache":        buckets["Cache"].append((i,x,y,sz,st_))
+        elif i in path_nodes:     buckets["waypoint"].append((i,x,y,sz,st_))
+        else:                     buckets["Nothing"].append((i,x,y,sz,st_))
+ 
     def mk_trace(items, fill, border, tcolor, name, symbol="circle", extra_border=None):
         if not items: return None
         return go.Scatter(
@@ -293,18 +303,27 @@ def make_fig(edges, pos, node_states, n_total, model_name,
 
     # source: 星 (single) or 経路出発ノード群 (all)
     if source in ("all_static", "all_dynamic"):
-        path_sources = sorted(set(path[0] for path in highlight_paths if path and len(path)>1))
+        # sim未実行時は highlight_paths=[] なので path_sources も空になる
+        path_sources = sorted(set(
+            path[0] for path in highlight_paths if path and len(path) > 1))
         if path_sources:
             ps_items = [(i, *pos[i], 22+30*(deg[i]/max(max_d,1))**0.6,
                          node_states.get(i,"Nothing")) for i in path_sources]
             traces.append(go.Scatter(
                 x=[it[1] for it in ps_items], y=[it[2] for it in ps_items],
                 mode="markers+text",
-                marker=dict(size=[it[3]+6 for it in ps_items], color="rgba(0,0,0,0)",
-                            symbol="star", line=dict(width=2.5, color="#ff8844"), opacity=0.90),
+                marker=dict(
+                    size=[it[3]+6 for it in ps_items],
+                    color=[S_COLORS[it[4]] for it in ps_items],
+                    symbol="star",
+                    line=dict(width=2.5, color="#ff8844"),
+                    opacity=0.90),
                 text=[str(it[0]) for it in ps_items],
                 textposition="middle center",
-                textfont=dict(size=10, color="#ff8844", family="Space Mono"),
+                textfont=dict(
+                    size=20,
+                    color=[S_TEXT[it[4]] for it in ps_items],
+                    family="Space Mono"),
                 hovertemplate="Node %{text} [path source]<extra></extra>",
                 name="PATH_SRC"))
     else:
@@ -318,7 +337,7 @@ def make_fig(edges, pos, node_states, n_total, model_name,
                 marker=dict(size=sz+10,color=fill,symbol="star",
                             line=dict(width=3,color=bord),opacity=0.98),
                 text=[str(i)],textposition="middle center",
-                textfont=dict(size=11,color=tclr,family="Space Mono"),
+                textfont=dict(size=20,color=tclr,family="Space Mono"),
                 hovertemplate=f"Node {i} [SOURCE / {st_}]<extra></extra>",name="SOURCE"))
 
     t=mk_trace(buckets["Orig"],  S_COLORS["Orig"],  S_BORDER["Orig"],  S_TEXT["Orig"],  "Orig")
@@ -508,6 +527,7 @@ def do_generate(seed):
     st.session_state.regen_seed   = seed
     st.session_state.sim_results        = []
     st.session_state.sim_initial_states = {}
+    st.session_state.sim_order          = []
 
 if draw_clicked:
     with st.spinner("Generating…"):
@@ -565,20 +585,87 @@ if st.session_state.graph_drawn:
         with col_a:
             if st.button("All Orig", use_container_width=True):
                 for k in st.session_state.node_states: st.session_state.node_states[k]="Orig"
+                st.session_state.sim_results = []   # node_states変更 → 旧sim無効
                 st.rerun()
         with col_b:
             if st.button("All None", use_container_width=True):
                 for k in st.session_state.node_states: st.session_state.node_states[k]="Nothing"
+                st.session_state.sim_results = []   # node_states変更 → 旧sim無効
                 st.rerun()
 
     # Dynamic モードのオプションと実行ボタン
     if src == "all_dynamic":
         with st.expander("⚙️ Dynamic options", expanded=True):
+            # ── Cache 作成オプション ──────────────────────────────
             st.session_state.sim_create_cache = st.checkbox(
                 "経路上の Nothing ノードを Cache に変更する",
                 value=st.session_state.sim_create_cache)
+
+            st.markdown(
+                "<p style='font-family:Space Mono,monospace;font-size:0.74rem;"
+                "color:#8888aa;margin:.6rem 0 .2rem;'>アクセスパターン</p>",
+                unsafe_allow_html=True)
+
+            # ── デフォルト / ランダム生成 ────────────────────────
+            pat_c1, pat_c2, pat_c3 = st.columns([1.2, 1, 1])
+            with pat_c1:
+                gen_mode = st.selectbox(
+                    "生成モード",
+                    ["デフォルト (0→n順, 1回)", "ランダム生成"],
+                    index=st.session_state.sim_gen_mode,
+                    key="_gen_mode", label_visibility="collapsed")
+                st.session_state.sim_gen_mode = \
+                    0 if gen_mode == "デフォルト (0→n順, 1回)" else 1
+            with pat_c2:
+                rand_steps = st.number_input(
+                    "アクセス回数", min_value=1, max_value=200,
+                    value=st.session_state.sim_rand_steps,
+                    step=1, key="_rand_steps",
+                    disabled=(gen_mode != "ランダム生成"),
+                    label_visibility="collapsed")
+                st.session_state.sim_rand_steps = int(rand_steps)
+            with pat_c3:
+                if st.button("🎲 生成 / リセット", use_container_width=True):
+                    if gen_mode == "ランダム生成":
+                        rng = np.random.default_rng()
+                        st.session_state.sim_order = list(
+                            rng.integers(0, n_total, size=st.session_state.sim_rand_steps))
+                    else:
+                        st.session_state.sim_order = list(range(n_total))
+
+            # sim_order が空ならデフォルトで初期化
+            if not st.session_state.sim_order:
+                st.session_state.sim_order = list(range(n_total))
+
+            # ── st.data_editor でパターン表示・編集 ──────────────
+            import pandas as pd
+            order_df = pd.DataFrame({
+                "Step": list(range(len(st.session_state.sim_order))),
+                "Node": [int(x) for x in st.session_state.sim_order],
+            })
+            edited_df = st.data_editor(
+                order_df,
+                column_config={
+                    "Step": st.column_config.NumberColumn(
+                        "Step", disabled=True, width="small"),
+                    "Node": st.column_config.NumberColumn(
+                        "Node (0–{})".format(n_total - 1),
+                        min_value=0, max_value=n_total - 1,
+                        step=1, width="small"),
+                },
+                num_rows="dynamic",
+                use_container_width=False,
+                height=min(36 * len(order_df) + 40, 320),
+                key="_order_editor",
+            )
+            # 編集結果を反映（範囲外はクランプ）
+            raw = edited_df["Node"].dropna().tolist()
+            st.session_state.sim_order = [
+                int(max(0, min(n_total - 1, v))) for v in raw]
+
+        # ── Run Simulation ボタン ─────────────────────────────────
         if st.button("▶▶  Run Simulation", type="primary", use_container_width=True):
-            order = list(range(n_total))   # 将来: 順序オプションをここで差し替え
+            order = st.session_state.sim_order or list(range(n_total))
             sim_results, final_states = run_simulation(
                 st.session_state.graph_edges, n_total,
                 st.session_state.node_states, ttype,
@@ -601,6 +688,11 @@ if st.session_state.graph_drawn:
             highlight_paths = [p for _,_,p in path_results if p]
         else:
             highlight_paths = [p for _,p in path_results if p]
+
+    # all_dynamic で sim 未実行のときは経路・星を一切表示しない
+    if src == "all_dynamic" and not st.session_state.sim_results:
+        highlight_paths = []
+        path_results    = []
 
     # 図
     fig = make_fig(st.session_state.graph_edges, pos_dict,
@@ -630,37 +722,55 @@ if st.session_state.graph_drawn:
 
             trace_node_lists = []
 
-            if src in ("all_static", "all_dynamic"):
-                # make_fig: source in all → PATH_SRC (path_sources が空でなければ)
+            # make_fig のバケツ分けを完全に再現する
+            # make_fig では source が整数のときのみ i==source でバケツ"source"に振り分ける。
+            # all_static/all_dynamic のときは source が文字列なので i==source は常にFalse →
+            # 全ノードが Orig/Cache/waypoint/Nothing に振り分けられる。
+            is_all_mode = src in ("all_static", "all_dynamic")
+            # source バケツに入るノード（整数ソース時のみ）
+            source_node_id = src if not is_all_mode else None
+
+            if is_all_mode:
+                # PATH_SRC トレース（2ホップ以上の経路出発点、make_figと同じ集合）
                 path_sources = sorted(set(
                     path[0] for path in highlight_paths if path and len(path) > 1))
                 if path_sources:
                     trace_node_lists.append((ci, path_sources)); ci += 1
+                # PATH_SRC ノードは以下のバケツから除外（make_figと同じ）
+                path_sources_set_click = set(path_sources)
             else:
-                # make_fig: source != "all" → source ノード1つ (star)
+                # 単一ソース★トレース
                 trace_node_lists.append((ci, [src])); ci += 1
+                path_sources_set_click = set()
 
-            # Orig (source以外)
+            # Orig: source・PATH_SRC バケツ以外
             orig_l = sorted([i for i in range(n_total)
-                             if states.get(i,"Nothing")=="Orig"
-                             and (True if src in ("all_static","all_dynamic") else i!=src)])
+                             if states.get(i, "Nothing") == "Orig"
+                             and i != source_node_id
+                             and i not in path_sources_set_click])
             if orig_l: trace_node_lists.append((ci, orig_l)); ci += 1
-            # Cache (source以外)
+            
+            # Cache: source・PATH_SRC バケツ以外
             cach_l = sorted([i for i in range(n_total)
-                             if states.get(i,"Nothing")=="Cache"
-                             and (True if src in ("all_static","all_dynamic") else i!=src)])
+                             if states.get(i, "Nothing") == "Cache"
+                             and i != source_node_id
+                             and i not in path_sources_set_click])
             if cach_l: trace_node_lists.append((ci, cach_l)); ci += 1
-            # waypoint: Nothing & in path_nodes_set (source以外)
+
+            # waypoint: Nothing & 経路上（source・PATH_SRC バケツ以外）
             wp_l = sorted([i for i in range(n_total)
-                           if states.get(i,"Nothing")=="Nothing"
+                           if states.get(i, "Nothing") == "Nothing"
                            and i in path_nodes_set
-                           and (True if src=="all" else i!=src)])
+                           and i != source_node_id
+                           and i not in path_sources_set_click])
             if wp_l: trace_node_lists.append((ci, wp_l)); ci += 1
-            # Nothing: それ以外
+
+            # Nothing: それ以外（source・PATH_SRC バケツ以外）
             no_l = sorted([i for i in range(n_total)
-                           if states.get(i,"Nothing")=="Nothing"
+                           if states.get(i, "Nothing") == "Nothing"
                            and i not in path_nodes_set
-                           and (True if src=="all" else i!=src)])
+                           and i != source_node_id
+                           and i not in path_sources_set_click])
             if no_l: trace_node_lists.append((ci, no_l)); ci += 1
 
             for curve_ci, node_list in trace_node_lists:
@@ -669,6 +779,7 @@ if st.session_state.graph_drawn:
                     cur = states.get(nid, "Nothing")
                     nxt = STATES[(STATES.index(cur)+1) % len(STATES)]
                     st.session_state.node_states[nid] = nxt
+                    st.session_state.sim_results = []   # node_states変更 → 旧sim無効
                     st.rerun()
 
     # 経路テキスト
