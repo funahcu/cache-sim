@@ -16,6 +16,8 @@ h1,h2,h3{font-family:'Syne',sans-serif!important;font-weight:800!important;lette
 .block-container{padding-top:2rem;max-width:780px;}
 .stSlider label{font-family:'Space Mono',monospace!important;font-size:0.76rem!important;
     color:#8888aa!important;text-transform:uppercase;letter-spacing:0.08em;}
+.stButton>button[kind="secondary"]{background-color:#7c6af7!important;color:#ffffff!important;border-color:#7c6af7!important;}
+.stButton>button[kind="secondary"]:hover{background-color:#6a5ae0!important;color:#ffffff!important;border-color:#6a5ae0!important;}
 .model-badge{display:inline-block;padding:3px 12px;border-radius:20px;
     font-family:'Space Mono',monospace;font-size:0.70rem;font-weight:700;
     letter-spacing:0.1em;text-transform:uppercase;}
@@ -47,6 +49,15 @@ S_COLORS = {                              # 塗り色
     "Orig":    "#ff6644",
     "Cache":   "#44ddaa",
 }
+def cache_color(hit_count):
+    """hit_count に応じて Cache 色を補間する。
+    0回 → #44ddaa（薄いミント）、5回以上 → #00aa44（濃い緑）"""
+    t = min(hit_count, 5) / 5.0          # 0.0 〜 1.0
+    r = int(0x44 + (0x00 - 0x44) * t)   # 0x44 → 0x00
+    g = int(0xdd + (0xaa - 0xdd) * t)   # 0xdd → 0xaa
+    b = int(0xaa + (0x44 - 0xaa) * t)   # 0xaa → 0x44
+    return f"#{r:02x}{g:02x}{b:02x}"
+
 S_BORDER = {
     "Nothing": "#6655aa",
     "Orig":    "#ffaa88",
@@ -65,7 +76,8 @@ def _init():
                 last_n_links=0, last_model="", source_node=0,
                 target_type="Orig", regen_seed=42,
                 sim_results=[], sim_initial_states={}, sim_create_cache=True,
-                sim_order=[], sim_rand_steps=10, sim_gen_mode=0)
+                sim_order=[], sim_rand_steps=10, sim_gen_mode=0,
+                cache_hit_count={})
     for k, v in defs.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -210,19 +222,27 @@ def run_simulation(edges, n_total, initial_states, target_type,
     G = nx.Graph(); G.add_nodes_from(range(n_total)); G.add_edges_from(edges)
     working = initial_states.copy()
     sim_results = []
+    hit_count = {i: 0 for i in range(n_total)}
+    count_hits = target_type in ("Cache", "Cache or Orig")
     for step, src in enumerate(order):
         targets = sorted([i for i,s in working.items()
                           if _is_target(s, target_type)])
         tgt, path = _nearest_target(G, src, targets, working)
         newly_cached = []
+        hit_node = None
         if create_cache and path:
             for nid in path:
                 if working[nid] == "Nothing":  # Orig は上書きしない
                     working[nid] = "Cache"
                     newly_cached.append(nid)
+        if count_hits and tgt is not None and working.get(tgt) == "Cache":
+            hit_count[tgt] += 1
+            hit_node = tgt
         sim_results.append({"step": step, "src": src, "tgt": tgt,
-                            "path": path, "cached": newly_cached})
-    return sim_results, working
+                            "path": path, "cached": newly_cached,
+                            "hit_node": hit_node,
+                            "hit_count_snap": hit_count.copy()})
+    return sim_results, working, hit_count
 
 def replay_states(initial_states, sim_results, create_cache, up_to_step):
     """initial_states + sim_results から up_to_step 実行後の状態を再現する"""
@@ -286,13 +306,15 @@ def make_fig(edges, pos, node_states, n_total, model_name,
         elif i in path_nodes:     buckets["waypoint"].append((i,x,y,sz,st_))
         else:                     buckets["Nothing"].append((i,x,y,sz,st_))
  
-    def mk_trace(items, fill, border, tcolor, name, symbol="circle", extra_border=None):
+    def mk_trace(items, fill, border, tcolor, name, symbol="circle", per_node_fill=None):
         if not items: return None
         return go.Scatter(
             x=[it[1] for it in items], y=[it[2] for it in items],
             mode="markers+text",
-            marker=dict(size=[it[3] for it in items], color=fill, symbol=symbol,
-                        line=dict(width=2.5, color=border if not extra_border else extra_border),
+            marker=dict(size=[it[3] for it in items],
+                        color=per_node_fill if per_node_fill is not None else fill,
+                        symbol=symbol,
+                        line=dict(width=2.5, color=border),
                         opacity=0.95),
             text=[str(it[0]) for it in items],
             textposition="middle center",
@@ -342,7 +364,10 @@ def make_fig(edges, pos, node_states, n_total, model_name,
 
     t=mk_trace(buckets["Orig"],  S_COLORS["Orig"],  S_BORDER["Orig"],  S_TEXT["Orig"],  "Orig")
     if t: traces.append(t)
-    t=mk_trace(buckets["Cache"], S_COLORS["Cache"], S_BORDER["Cache"], S_TEXT["Cache"], "Cache")
+    cache_fills = [cache_color(st.session_state.get("cache_hit_count", {}).get(it[0], 0))
+                   for it in buckets["Cache"]]
+    t=mk_trace(buckets["Cache"], S_COLORS["Cache"], S_BORDER["Cache"], S_TEXT["Cache"], "Cache",
+               per_node_fill=cache_fills if cache_fills else None)
     if t: traces.append(t)
     # waypoint (Nothing だが経路上)
     t=mk_trace(buckets["waypoint"],"rgba(255,221,68,0.15)","#ffdd44","#ffdd44","waypoint")
@@ -459,6 +484,8 @@ def render_sim_results(sim_results, target_type, node_states_final):
         tgt      = r["tgt"]
         path     = r["path"]
         cached   = r["cached"]
+        hit_node = r.get("hit_node")
+        snap     = r.get("hit_count_snap", {})
         src_st   = node_states_final.get(src_node, "Nothing")
         sc       = {"Orig":"#ff6644","Cache":"#44ddaa"}.get(src_st, "#ff8844")
         src_span = (f"<span style='color:#ff8844;font-weight:700'>★{src_node}</span>"
@@ -478,7 +505,14 @@ def render_sim_results(sim_results, target_type, node_states_final):
                     if nid == src_node: c, lbl = "#ff8844", f"★{nid}"
                     elif nid == tgt:    c, lbl = tc, f"◆{nid}"
                     else:               c, lbl = "#ccccee", str(nid)
-                    parts.append(f"<span style='color:{c};font-weight:700'>{lbl}</span>")
+                    if nid == hit_node:
+                        h = snap.get(nid, 0)
+                        hit_str = (f"<span style='color:#44ddaa;font-size:.68rem;'>"
+                                   f"(hit:{h})</span>")
+                    else:
+                        hit_str = ""
+                    parts.append(
+                        f"<span style='color:{c};font-weight:700'>{lbl}</span>{hit_str}")
                 arr = "<span style='color:#44dd44'> → </span>"
                 row = src_span + "  " + arr.join(parts) + (
                     f" <span style='color:#444466;font-size:.73rem;'>"
@@ -528,6 +562,7 @@ def do_generate(seed):
     st.session_state.sim_results        = []
     st.session_state.sim_initial_states = {}
     st.session_state.sim_order          = []
+    st.session_state.cache_hit_count    = {}
 
 if draw_clicked:
     with st.spinner("Generating…"):
@@ -581,16 +616,27 @@ if st.session_state.graph_drawn:
         st.session_state.target_type = ttype
     with cc3:
         st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
-        col_a, col_b = st.columns(2)
+        col_a, col_b, col_c = st.columns(3)
         with col_a:
             if st.button("All Orig", use_container_width=True):
                 for k in st.session_state.node_states: st.session_state.node_states[k]="Orig"
-                st.session_state.sim_results = []   # node_states変更 → 旧sim無効
+                st.session_state.sim_results    = []
+                st.session_state.cache_hit_count = {}
                 st.rerun()
         with col_b:
             if st.button("All None", use_container_width=True):
                 for k in st.session_state.node_states: st.session_state.node_states[k]="Nothing"
-                st.session_state.sim_results = []   # node_states変更 → 旧sim無効
+                st.session_state.sim_results    = []
+                st.session_state.cache_hit_count = {}
+                st.rerun()
+        with col_c:
+            if st.button("Src→None", use_container_width=True,
+                         disabled=not st.session_state.sim_results):
+                for nid in set(st.session_state.sim_order):
+                    if st.session_state.node_states.get(nid) not in ("Orig",):
+                        st.session_state.node_states[nid] = "Nothing"
+                st.session_state.sim_results     = []
+                st.session_state.cache_hit_count = {}
                 st.rerun()
 
     # Dynamic モードのオプションと実行ボタン
@@ -666,13 +712,15 @@ if st.session_state.graph_drawn:
         # ── Run Simulation ボタン ─────────────────────────────────
         if st.button("▶▶  Run Simulation", type="primary", use_container_width=True):
             order = st.session_state.sim_order or list(range(n_total))
-            sim_results, final_states = run_simulation(
+            sim_results, final_states, hit_count = run_simulation(
                 st.session_state.graph_edges, n_total,
                 st.session_state.node_states, ttype,
                 order, st.session_state.sim_create_cache)
             st.session_state.sim_results        = sim_results
             st.session_state.sim_initial_states = st.session_state.node_states.copy()
             st.session_state.node_states        = final_states
+            st.session_state.cache_hit_count    = {}   # まず0クリア
+            st.session_state.cache_hit_count = hit_count
             st.rerun()
 
     # 経路計算
