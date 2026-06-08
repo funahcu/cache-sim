@@ -79,6 +79,7 @@ def _init():
                 sim_order=[], sim_rand_steps=10, sim_gen_mode=0,
                 cache_hit_count={},
                 sim_cache_skip_src=False,
+                sim_cache_prob=100,
                 sim_order_source="editor")
     for k, v in defs.items():
         if k not in st.session_state:
@@ -212,7 +213,7 @@ def shortest_paths(edges, n_total, node_states, source, target_type):
 
 # ─── Dynamic シミュレーション ─────────────────────────────────
 def run_simulation(edges, n_total, initial_states, target_type,
-                   order, create_cache, cache_skip_src=False):
+                   order, create_cache, cache_skip_src=False, cache_prob=100):
     """
     order に従い各ノードを starting node として順に処理する。
     各ステップで最近傍ターゲットへの最短経路を求め、
@@ -226,6 +227,7 @@ def run_simulation(edges, n_total, initial_states, target_type,
     sim_results = []
     hit_count = {i: 0 for i in range(n_total)}
     count_hits = target_type in ("Cache", "Cache or Orig")
+    rng = np.random.default_rng()
     for step, src in enumerate(order):
         targets = sorted([i for i,s in working.items()
                           if _is_target(s, target_type)])
@@ -234,7 +236,10 @@ def run_simulation(edges, n_total, initial_states, target_type,
         hit_node = None
         if create_cache and path:
             for nid in path:
-                if working[nid] == "Nothing" and not (cache_skip_src and nid == src):
+                is_src = (nid == src)
+                if working[nid] == "Nothing" \
+                        and not (cache_skip_src and is_src) \
+                        and rng.random() < cache_prob / 100.0:
                     working[nid] = "Cache"
                     newly_cached.append(nid)
         if count_hits and tgt is not None and working.get(tgt) == "Cache":
@@ -652,6 +657,19 @@ if st.session_state.graph_drawn:
                 "起点ノードには Cache を作らない",
                 value=st.session_state.sim_cache_skip_src,
                 disabled=not st.session_state.sim_create_cache)
+            cache_prob_disabled = not st.session_state.sim_create_cache
+            st.session_state.sim_cache_prob = st.select_slider(
+                "キャッシュ作成確率",
+                options=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+                value=st.session_state.sim_cache_prob,
+                disabled=cache_prob_disabled,
+                format_func=lambda x: f"{x}%",
+            )
+            if cache_prob_disabled:
+                st.markdown(
+                    "<p style='font-family:Space Mono,monospace;font-size:0.70rem;"
+                    "color:#444466;margin-top:-.4rem;'>キャッシュ作成が無効のため確率は適用されません</p>",
+                    unsafe_allow_html=True)
 
             st.markdown(
                 "<p style='font-family:Space Mono,monospace;font-size:0.74rem;"
@@ -787,7 +805,8 @@ if st.session_state.graph_drawn:
                 st.session_state.graph_edges, n_total,
                 st.session_state.node_states, ttype,
                 order, st.session_state.sim_create_cache,
-                cache_skip_src=st.session_state.sim_cache_skip_src)
+                cache_skip_src=st.session_state.sim_cache_skip_src,
+                cache_prob=st.session_state.sim_cache_prob)
             st.session_state.sim_results        = sim_results
             st.session_state.sim_initial_states = st.session_state.node_states.copy()
             st.session_state.node_states        = final_states
