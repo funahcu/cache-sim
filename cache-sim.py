@@ -78,6 +78,7 @@ def _init():
                 sim_results=[], sim_initial_states={}, sim_create_cache=True,
                 sim_order=[], sim_rand_steps=10, sim_gen_mode=0,
                 cache_hit_count={},
+                sim_cache_skip_src=False,
                 sim_order_source="editor")
     for k, v in defs.items():
         if k not in st.session_state:
@@ -211,7 +212,7 @@ def shortest_paths(edges, n_total, node_states, source, target_type):
 
 # ─── Dynamic シミュレーション ─────────────────────────────────
 def run_simulation(edges, n_total, initial_states, target_type,
-                   order, create_cache):
+                   order, create_cache, cache_skip_src=False):
     """
     order に従い各ノードを starting node として順に処理する。
     各ステップで最近傍ターゲットへの最短経路を求め、
@@ -233,7 +234,7 @@ def run_simulation(edges, n_total, initial_states, target_type,
         hit_node = None
         if create_cache and path:
             for nid in path:
-                if working[nid] == "Nothing":  # Orig は上書きしない
+                if working[nid] == "Nothing" and not (cache_skip_src and nid == src):
                     working[nid] = "Cache"
                     newly_cached.append(nid)
         if count_hits and tgt is not None and working.get(tgt) == "Cache":
@@ -647,6 +648,10 @@ if st.session_state.graph_drawn:
             st.session_state.sim_create_cache = st.checkbox(
                 "経路上の Nothing ノードを Cache に変更する",
                 value=st.session_state.sim_create_cache)
+            st.session_state.sim_cache_skip_src = st.checkbox(
+                "起点ノードには Cache を作らない",
+                value=st.session_state.sim_cache_skip_src,
+                disabled=not st.session_state.sim_create_cache)
 
             st.markdown(
                 "<p style='font-family:Space Mono,monospace;font-size:0.74rem;"
@@ -781,7 +786,8 @@ if st.session_state.graph_drawn:
             sim_results, final_states, hit_count = run_simulation(
                 st.session_state.graph_edges, n_total,
                 st.session_state.node_states, ttype,
-                order, st.session_state.sim_create_cache)
+                order, st.session_state.sim_create_cache,
+                cache_skip_src=st.session_state.sim_cache_skip_src)
             st.session_state.sim_results        = sim_results
             st.session_state.sim_initial_states = st.session_state.node_states.copy()
             st.session_state.node_states        = final_states
