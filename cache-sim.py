@@ -77,7 +77,8 @@ def _init():
                 target_type="Orig", regen_seed=42,
                 sim_results=[], sim_initial_states={}, sim_create_cache=True,
                 sim_order=[], sim_rand_steps=10, sim_gen_mode=0,
-                cache_hit_count={})
+                cache_hit_count={},
+                sim_order_source="editor")
     for k, v in defs.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -631,7 +632,7 @@ if st.session_state.graph_drawn:
                 st.rerun()
         with col_c:
             if st.button("Src→None", use_container_width=True,
-                         disabled=not st.session_state.sim_results):
+                         disabled=not st.session_state.sim_order):
                 for nid in set(st.session_state.sim_order):
                     if st.session_state.node_states.get(nid) not in ("Orig",):
                         st.session_state.node_states[nid] = "Nothing"
@@ -682,32 +683,97 @@ if st.session_state.graph_drawn:
             # sim_order が空ならデフォルトで初期化
             if not st.session_state.sim_order:
                 st.session_state.sim_order = list(range(n_total))
+            
+            # ── 現在の有効ソース表示 ──────────────────────────────
+            src_label = "🎲 エディタ" if st.session_state.sim_order_source == "editor" else "📋 テキスト貼付"
+            st.markdown(
+                f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                f"color:#8888aa;margin:.2rem 0 .4rem;'>"
+                f"現在のアクセスパターン: "
+                f"<span style='color:#c4b5fd;font-weight:700;'>{src_label}</span></p>",
+                unsafe_allow_html=True)
 
             # ── st.data_editor でパターン表示・編集 ──────────────
-            import pandas as pd
-            order_df = pd.DataFrame({
-                "Step": list(range(len(st.session_state.sim_order))),
-                "Node": [int(x) for x in st.session_state.sim_order],
-            })
-            edited_df = st.data_editor(
-                order_df,
-                column_config={
-                    "Step": st.column_config.NumberColumn(
-                        "Step", disabled=True, width="small"),
-                    "Node": st.column_config.NumberColumn(
-                        "Node (0–{})".format(n_total - 1),
-                        min_value=0, max_value=n_total - 1,
-                        step=1, width="small"),
-                },
-                num_rows="dynamic",
-                use_container_width=False,
-                height=min(36 * len(order_df) + 40, 320),
-                key="_order_editor",
-            )
-            # 編集結果を反映（範囲外はクランプ）
-            raw = edited_df["Node"].dropna().tolist()
-            st.session_state.sim_order = [
-                int(max(0, min(n_total - 1, v))) for v in raw]
+            import pandas as pd  # noqa: PLC0415
+            tab_editor, tab_paste = st.tabs(["🎲 エディタ", "📋 テキスト貼付"])
+
+            with tab_editor:
+                order_df = pd.DataFrame({
+                    "Step": list(range(len(st.session_state.sim_order))),
+                    "Node": [int(x) for x in st.session_state.sim_order],
+                })
+                edited_df = st.data_editor(
+                    order_df,
+                    column_config={
+                        "Step": st.column_config.NumberColumn(
+                            "Step", disabled=True, width="small"),
+                        "Node": st.column_config.NumberColumn(
+                            "Node (0–{})".format(n_total - 1),
+                            min_value=0, max_value=n_total - 1,
+                            step=1, width="small"),
+                    },
+                    num_rows="dynamic",
+                    use_container_width=False,
+                    height=min(36 * len(order_df) + 40, 320),
+                    key="_order_editor",
+                )
+
+            # ── テキスト貼り付けインポート ────────────────────────
+                if st.button("✅ このパターンを使う", key="_editor_apply",
+                             use_container_width=True):
+                    raw = edited_df["Node"].dropna().tolist()
+                    st.session_state.sim_order = [
+                        int(max(0, min(n_total - 1, v))) for v in raw]
+                    st.session_state.sim_order_source = "editor"
+                    st.session_state.sim_results      = []
+                    st.session_state.cache_hit_count  = {}
+                    st.rerun()
+
+            with tab_paste:
+#            with st.expander("📋 テキストからアクセスパターンを読み込む", expanded=False):
+                st.markdown(
+                    "<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                    "color:#8888aa;margin:0 0 .4rem;'>"
+                    "1行1ノード番号で入力。# 始まりはコメント。</p>",
+                    unsafe_allow_html=True)
+                pasted = st.text_area(
+                    "アクセスパターン",
+                    value="",
+                    height=160,
+                    placeholder=f"例:\n5\n9\n0\n3\n# ノード番号は 0–{n_total-1}",
+                    key="_paste_order",
+                    label_visibility="collapsed")
+                tp_c1, tp_c2 = st.columns([1, 2])
+                with tp_c1:
+                    if st.button("✅ このパターンを使う", use_container_width=True,
+                                 key="_paste_apply"):
+                        parsed = []
+                        errors = []
+                        for lineno, line in enumerate(pasted.splitlines(), 1):
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            try:
+                                v = int(line)
+                                parsed.append(int(max(0, min(n_total - 1, v))))
+                            except ValueError:
+                                errors.append(f"行{lineno}: {line!r} は無効")
+                        if parsed:
+                            st.session_state.sim_order = parsed
+                            st.session_state.sim_order_source = "paste"
+                            st.session_state.sim_results = []
+                            st.session_state.cache_hit_count = {}
+                            st.rerun()
+                        if errors:
+                            st.warning("スキップした行: " + " / ".join(errors))
+                        
+                with tp_c2:
+                    st.markdown(
+                        f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                        f"color:#8888aa;padding-top:.5rem;'>"
+                        f"{len(pasted.splitlines())} 行入力 → "
+                        f"適用後 {len([l for l in pasted.splitlines() if l.strip() and not l.strip().startswith('#')])} ステップ</p>",
+                        unsafe_allow_html=True)
 
         # ── Run Simulation ボタン ─────────────────────────────────
         if st.button("▶▶  Run Simulation", type="primary", use_container_width=True):
@@ -740,7 +806,6 @@ if st.session_state.graph_drawn:
     # all_dynamic で sim 未実行のときは経路・星を一切表示しない
     if src == "all_dynamic" and not st.session_state.sim_results:
         highlight_paths = []
-        path_results    = []
 
     # 図
     fig = make_fig(st.session_state.graph_edges, pos_dict,
@@ -828,6 +893,7 @@ if st.session_state.graph_drawn:
                     nxt = STATES[(STATES.index(cur)+1) % len(STATES)]
                     st.session_state.node_states[nid] = nxt
                     st.session_state.sim_results = []   # node_states変更 → 旧sim無効
+                    st.session_state.cache_hit_count  = {}
                     st.rerun()
 
     # 経路テキスト
