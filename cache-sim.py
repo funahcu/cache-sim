@@ -16,6 +16,8 @@ h1,h2,h3{font-family:'Syne',sans-serif!important;font-weight:800!important;lette
 .block-container{padding-top:2rem;max-width:780px;}
 .stSlider label{font-family:'Space Mono',monospace!important;font-size:0.76rem!important;
     color:#8888aa!important;text-transform:uppercase;letter-spacing:0.08em;}
+.stButton>button[kind="secondary"]{background-color:#7c6af7!important;color:#ffffff!important;border-color:#7c6af7!important;}
+.stButton>button[kind="secondary"]:hover{background-color:#6a5ae0!important;color:#ffffff!important;border-color:#6a5ae0!important;}
 .model-badge{display:inline-block;padding:3px 12px;border-radius:20px;
     font-family:'Space Mono',monospace;font-size:0.70rem;font-weight:700;
     letter-spacing:0.1em;text-transform:uppercase;}
@@ -47,6 +49,15 @@ S_COLORS = {                              # 塗り色
     "Orig":    "#ff6644",
     "Cache":   "#44ddaa",
 }
+def cache_color(hit_count):
+    """hit_count に応じて Cache 色を補間する。
+    0回 → #44ddaa（薄いミント）、5回以上 → #00aa44（濃い緑）"""
+    t = min(hit_count, 5) / 5.0          # 0.0 〜 1.0
+    r = int(0x44 + (0x00 - 0x44) * t)   # 0x44 → 0x00
+    g = int(0xdd + (0xaa - 0xdd) * t)   # 0xdd → 0xaa
+    b = int(0xaa + (0x44 - 0xaa) * t)   # 0xaa → 0x44
+    return f"#{r:02x}{g:02x}{b:02x}"
+
 S_BORDER = {
     "Nothing": "#6655aa",
     "Orig":    "#ffaa88",
@@ -64,7 +75,12 @@ def _init():
                 graph_pos={}, graph_drawn=False, last_n_nodes=0,
                 last_n_links=0, last_model="", source_node=0,
                 target_type="Orig", regen_seed=42,
-                sim_results=[], sim_initial_states={}, sim_create_cache=True)
+                sim_results=[], sim_initial_states={}, sim_create_cache=True,
+                sim_order=[], sim_rand_steps=10, sim_gen_mode=0,
+                cache_hit_count={},
+                sim_cache_skip_src=False,
+                sim_cache_prob=100, # create_cache フラグ廃止、確率0%=無効
+                sim_order_source="editor")
     for k, v in defs.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -197,11 +213,11 @@ def shortest_paths(edges, n_total, node_states, source, target_type):
 
 # ─── Dynamic シミュレーション ─────────────────────────────────
 def run_simulation(edges, n_total, initial_states, target_type,
-                   order, create_cache):
+                   order, cache_skip_src=False, cache_prob=100):
     """
     order に従い各ノードを starting node として順に処理する。
     各ステップで最近傍ターゲットへの最短経路を求め、
-    create_cache=True なら経路上の Nothing ノードを Cache に変更する。
+    cache_prob の確率で経路上の Nothing ノードを Cache に変更する。
     戻り値: (sim_results, final_states)
       sim_results: [{"step", "src", "tgt", "path", "cached"}, ...]
       final_states: シミュレーション後の node_states
@@ -209,19 +225,31 @@ def run_simulation(edges, n_total, initial_states, target_type,
     G = nx.Graph(); G.add_nodes_from(range(n_total)); G.add_edges_from(edges)
     working = initial_states.copy()
     sim_results = []
+    hit_count = {i: 0 for i in range(n_total)}
+    count_hits = target_type in ("Cache", "Cache or Orig")
+    rng = np.random.default_rng()
     for step, src in enumerate(order):
         targets = sorted([i for i,s in working.items()
                           if _is_target(s, target_type)])
         tgt, path = _nearest_target(G, src, targets, working)
         newly_cached = []
-        if create_cache and path:
+        hit_node = None
+        if path:
             for nid in path:
-                if working[nid] == "Nothing":
+                is_src = (nid == src)
+                if working[nid] == "Nothing" \
+                        and not (cache_skip_src and is_src) \
+                        and rng.random() < cache_prob / 100.0:
                     working[nid] = "Cache"
                     newly_cached.append(nid)
+        if count_hits and tgt is not None and working.get(tgt) == "Cache":
+            hit_count[tgt] += 1
+            hit_node = tgt
         sim_results.append({"step": step, "src": src, "tgt": tgt,
-                            "path": path, "cached": newly_cached})
-    return sim_results, working
+                            "path": path, "cached": newly_cached,
+                            "hit_node": hit_node,
+                            "hit_count_snap": hit_count.copy()})
+    return sim_results, working, hit_count
 
 def replay_states(initial_states, sim_results, create_cache, up_to_step):
     """initial_states + sim_results から up_to_step 実行後の状態を再現する"""
@@ -265,24 +293,35 @@ def make_fig(edges, pos, node_states, n_total, model_name,
         traces.append(go.Scatter(x=ex_h,y=ey_h,mode="lines",
                                  line=dict(width=3.5,color="#ffdd44"),opacity=0.80,hoverinfo="none"))
 
-    # ノードをバケツ分け (source / Orig / Cache / Nothing+waypoint / Nothing)
+    # PATH_SRC: all モードで経路出発点（2ホップ以上）→ 専用トレースに使い、他バケツから除外
+    if source in ("all_static", "all_dynamic"):
+        path_sources_set = set(
+            path[0] for path in highlight_paths if path and len(path) > 1)
+    else:
+        path_sources_set = set()
+
+    # ノードをバケツ分け (source / Orig / Cache / waypoint / Nothing)
+    # PATH_SRC ノードは path_sources_set に入るため他バケツから除外する    
     buckets = {"source":[], "Orig":[], "Cache":[], "waypoint":[], "Nothing":[]}
     for i in range(n_total):
         x,y=pos[i]; sz=22+30*(deg[i]/max(max_d,1))**0.6
         st_ = node_states.get(i,"Nothing")
-        if i==source:       buckets["source"].append((i,x,y,sz,st_))
-        elif st_=="Orig":   buckets["Orig"].append((i,x,y,sz,st_))
-        elif st_=="Cache":  buckets["Cache"].append((i,x,y,sz,st_))
-        elif i in path_nodes: buckets["waypoint"].append((i,x,y,sz,st_))
-        else:               buckets["Nothing"].append((i,x,y,sz,st_))
-
-    def mk_trace(items, fill, border, tcolor, name, symbol="circle", extra_border=None):
+        if i in path_sources_set: continue          # PATH_SRC 専用トレースで描画
+        if i==source:             buckets["source"].append((i,x,y,sz,st_))
+        elif st_=="Orig":         buckets["Orig"].append((i,x,y,sz,st_))
+        elif st_=="Cache":        buckets["Cache"].append((i,x,y,sz,st_))
+        elif i in path_nodes:     buckets["waypoint"].append((i,x,y,sz,st_))
+        else:                     buckets["Nothing"].append((i,x,y,sz,st_))
+ 
+    def mk_trace(items, fill, border, tcolor, name, symbol="circle", per_node_fill=None):
         if not items: return None
         return go.Scatter(
             x=[it[1] for it in items], y=[it[2] for it in items],
             mode="markers+text",
-            marker=dict(size=[it[3] for it in items], color=fill, symbol=symbol,
-                        line=dict(width=2.5, color=border if not extra_border else extra_border),
+            marker=dict(size=[it[3] for it in items],
+                        color=per_node_fill if per_node_fill is not None else fill,
+                        symbol=symbol,
+                        line=dict(width=2.5, color=border),
                         opacity=0.95),
             text=[str(it[0]) for it in items],
             textposition="middle center",
@@ -293,18 +332,27 @@ def make_fig(edges, pos, node_states, n_total, model_name,
 
     # source: 星 (single) or 経路出発ノード群 (all)
     if source in ("all_static", "all_dynamic"):
-        path_sources = sorted(set(path[0] for path in highlight_paths if path and len(path)>1))
+        # sim未実行時は highlight_paths=[] なので path_sources も空になる
+        path_sources = sorted(set(
+            path[0] for path in highlight_paths if path and len(path) > 1))
         if path_sources:
             ps_items = [(i, *pos[i], 22+30*(deg[i]/max(max_d,1))**0.6,
                          node_states.get(i,"Nothing")) for i in path_sources]
             traces.append(go.Scatter(
                 x=[it[1] for it in ps_items], y=[it[2] for it in ps_items],
                 mode="markers+text",
-                marker=dict(size=[it[3]+6 for it in ps_items], color="rgba(0,0,0,0)",
-                            symbol="star", line=dict(width=2.5, color="#ff8844"), opacity=0.90),
+                marker=dict(
+                    size=[it[3]+6 for it in ps_items],
+                    color=[S_COLORS[it[4]] for it in ps_items],
+                    symbol="star",
+                    line=dict(width=2.5, color="#ff8844"),
+                    opacity=0.90),
                 text=[str(it[0]) for it in ps_items],
                 textposition="middle center",
-                textfont=dict(size=10, color="#ff8844", family="Space Mono"),
+                textfont=dict(
+                    size=20,
+                    color=[S_TEXT[it[4]] for it in ps_items],
+                    family="Space Mono"),
                 hovertemplate="Node %{text} [path source]<extra></extra>",
                 name="PATH_SRC"))
     else:
@@ -318,12 +366,15 @@ def make_fig(edges, pos, node_states, n_total, model_name,
                 marker=dict(size=sz+10,color=fill,symbol="star",
                             line=dict(width=3,color=bord),opacity=0.98),
                 text=[str(i)],textposition="middle center",
-                textfont=dict(size=11,color=tclr,family="Space Mono"),
+                textfont=dict(size=20,color=tclr,family="Space Mono"),
                 hovertemplate=f"Node {i} [SOURCE / {st_}]<extra></extra>",name="SOURCE"))
 
     t=mk_trace(buckets["Orig"],  S_COLORS["Orig"],  S_BORDER["Orig"],  S_TEXT["Orig"],  "Orig")
     if t: traces.append(t)
-    t=mk_trace(buckets["Cache"], S_COLORS["Cache"], S_BORDER["Cache"], S_TEXT["Cache"], "Cache")
+    cache_fills = [cache_color(st.session_state.get("cache_hit_count", {}).get(it[0], 0))
+                   for it in buckets["Cache"]]
+    t=mk_trace(buckets["Cache"], S_COLORS["Cache"], S_BORDER["Cache"], S_TEXT["Cache"], "Cache",
+               per_node_fill=cache_fills if cache_fills else None)
     if t: traces.append(t)
     # waypoint (Nothing だが経路上)
     t=mk_trace(buckets["waypoint"],"rgba(255,221,68,0.15)","#ffdd44","#ffdd44","waypoint")
@@ -440,6 +491,8 @@ def render_sim_results(sim_results, target_type, node_states_final):
         tgt      = r["tgt"]
         path     = r["path"]
         cached   = r["cached"]
+        hit_node = r.get("hit_node")
+        snap     = r.get("hit_count_snap", {})
         src_st   = node_states_final.get(src_node, "Nothing")
         sc       = {"Orig":"#ff6644","Cache":"#44ddaa"}.get(src_st, "#ff8844")
         src_span = (f"<span style='color:#ff8844;font-weight:700'>★{src_node}</span>"
@@ -459,7 +512,14 @@ def render_sim_results(sim_results, target_type, node_states_final):
                     if nid == src_node: c, lbl = "#ff8844", f"★{nid}"
                     elif nid == tgt:    c, lbl = tc, f"◆{nid}"
                     else:               c, lbl = "#ccccee", str(nid)
-                    parts.append(f"<span style='color:{c};font-weight:700'>{lbl}</span>")
+                    if nid == hit_node:
+                        h = snap.get(nid, 0)
+                        hit_str = (f"<span style='color:#44ddaa;font-size:.68rem;'>"
+                                   f"(hit:{h})</span>")
+                    else:
+                        hit_str = ""
+                    parts.append(
+                        f"<span style='color:{c};font-weight:700'>{lbl}</span>{hit_str}")
                 arr = "<span style='color:#44dd44'> → </span>"
                 row = src_span + "  " + arr.join(parts) + (
                     f" <span style='color:#444466;font-size:.73rem;'>"
@@ -508,6 +568,8 @@ def do_generate(seed):
     st.session_state.regen_seed   = seed
     st.session_state.sim_results        = []
     st.session_state.sim_initial_states = {}
+    st.session_state.sim_order          = []
+    st.session_state.cache_hit_count    = {}
 
 if draw_clicked:
     with st.spinner("Generating…"):
@@ -561,31 +623,184 @@ if st.session_state.graph_drawn:
         st.session_state.target_type = ttype
     with cc3:
         st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
-        col_a, col_b = st.columns(2)
+        col_a, col_b, col_c = st.columns(3)
         with col_a:
             if st.button("All Orig", use_container_width=True):
                 for k in st.session_state.node_states: st.session_state.node_states[k]="Orig"
+                st.session_state.sim_results    = []
+                st.session_state.cache_hit_count = {}
                 st.rerun()
         with col_b:
             if st.button("All None", use_container_width=True):
                 for k in st.session_state.node_states: st.session_state.node_states[k]="Nothing"
+                st.session_state.sim_results    = []
+                st.session_state.cache_hit_count = {}
+                st.rerun()
+        with col_c:
+            if st.button("Src→None", use_container_width=True,
+                         disabled=not st.session_state.sim_order):
+                for nid in set(st.session_state.sim_order):
+                    if st.session_state.node_states.get(nid) not in ("Orig",):
+                        st.session_state.node_states[nid] = "Nothing"
+                st.session_state.sim_results     = []
+                st.session_state.cache_hit_count = {}
                 st.rerun()
 
     # Dynamic モードのオプションと実行ボタン
     if src == "all_dynamic":
         with st.expander("⚙️ Dynamic options", expanded=True):
-            st.session_state.sim_create_cache = st.checkbox(
-                "経路上の Nothing ノードを Cache に変更する",
-                value=st.session_state.sim_create_cache)
+            # ── Cache 作成オプション ──────────────────────────────
+            st.session_state.sim_cache_skip_src = st.checkbox(
+                "起点ノードには Cache を作らない",
+                value=st.session_state.sim_cache_skip_src)
+            st.session_state.sim_cache_prob = st.select_slider(
+                "キャッシュ作成確率",
+                options=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+                value=st.session_state.sim_cache_prob,
+                format_func=lambda x: f"{x}%",
+            )
+
+            st.markdown(
+                "<p style='font-family:Space Mono,monospace;font-size:0.74rem;"
+                "color:#8888aa;margin:.6rem 0 .2rem;'>アクセスパターン</p>",
+                unsafe_allow_html=True)
+
+            # ── デフォルト / ランダム生成 ────────────────────────
+            pat_c1, pat_c2, pat_c3 = st.columns([1.2, 1, 1])
+            with pat_c1:
+                gen_mode = st.selectbox(
+                    "生成モード",
+                    ["デフォルト (0→n順, 1回)", "ランダム生成"],
+                    index=st.session_state.sim_gen_mode,
+                    key="_gen_mode", label_visibility="collapsed")
+                st.session_state.sim_gen_mode = \
+                    0 if gen_mode == "デフォルト (0→n順, 1回)" else 1
+            with pat_c2:
+                rand_steps = st.number_input(
+                    "アクセス回数", min_value=1, max_value=200,
+                    value=st.session_state.sim_rand_steps,
+                    step=1, key="_rand_steps",
+                    disabled=(gen_mode != "ランダム生成"),
+                    label_visibility="collapsed")
+                st.session_state.sim_rand_steps = int(rand_steps)
+            with pat_c3:
+                if st.button("🎲 生成 / リセット", use_container_width=True):
+                    if gen_mode == "ランダム生成":
+                        rng = np.random.default_rng()
+                        st.session_state.sim_order = list(
+                            rng.integers(0, n_total, size=st.session_state.sim_rand_steps))
+                    else:
+                        st.session_state.sim_order = list(range(n_total))
+
+            # sim_order が空ならデフォルトで初期化
+            if not st.session_state.sim_order:
+                st.session_state.sim_order = list(range(n_total))
+            
+            # ── 現在の有効ソース表示 ──────────────────────────────
+            src_label = "🎲 エディタ" if st.session_state.sim_order_source == "editor" else "📋 テキスト貼付"
+            st.markdown(
+                f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                f"color:#8888aa;margin:.2rem 0 .4rem;'>"
+                f"現在のアクセスパターン: "
+                f"<span style='color:#c4b5fd;font-weight:700;'>{src_label}</span></p>",
+                unsafe_allow_html=True)
+
+            # ── st.data_editor でパターン表示・編集 ──────────────
+            import pandas as pd  # noqa: PLC0415
+            tab_editor, tab_paste = st.tabs(["🎲 エディタ", "📋 テキスト貼付"])
+
+            with tab_editor:
+                order_df = pd.DataFrame({
+                    "Step": list(range(len(st.session_state.sim_order))),
+                    "Node": [int(x) for x in st.session_state.sim_order],
+                })
+                edited_df = st.data_editor(
+                    order_df,
+                    column_config={
+                        "Step": st.column_config.NumberColumn(
+                            "Step", disabled=True, width="small"),
+                        "Node": st.column_config.NumberColumn(
+                            "Node (0–{})".format(n_total - 1),
+                            min_value=0, max_value=n_total - 1,
+                            step=1, width="small"),
+                    },
+                    num_rows="dynamic",
+                    use_container_width=False,
+                    height=min(36 * len(order_df) + 40, 320),
+                    key="_order_editor",
+                )
+
+            # ── テキスト貼り付けインポート ────────────────────────
+                if st.button("✅ このパターンを使う", key="_editor_apply",
+                             use_container_width=True):
+                    raw = edited_df["Node"].dropna().tolist()
+                    st.session_state.sim_order = [
+                        int(max(0, min(n_total - 1, v))) for v in raw]
+                    st.session_state.sim_order_source = "editor"
+                    st.session_state.sim_results      = []
+                    st.session_state.cache_hit_count  = {}
+                    st.rerun()
+
+            with tab_paste:
+#            with st.expander("📋 テキストからアクセスパターンを読み込む", expanded=False):
+                st.markdown(
+                    "<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                    "color:#8888aa;margin:0 0 .4rem;'>"
+                    "1行1ノード番号で入力。# 始まりはコメント。</p>",
+                    unsafe_allow_html=True)
+                pasted = st.text_area(
+                    "アクセスパターン",
+                    value="",
+                    height=160,
+                    placeholder=f"例:\n5\n9\n0\n3\n# ノード番号は 0–{n_total-1}",
+                    key="_paste_order",
+                    label_visibility="collapsed")
+                tp_c1, tp_c2 = st.columns([1, 2])
+                with tp_c1:
+                    if st.button("✅ このパターンを使う", use_container_width=True,
+                                 key="_paste_apply"):
+                        parsed = []
+                        errors = []
+                        for lineno, line in enumerate(pasted.splitlines(), 1):
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            try:
+                                v = int(line)
+                                parsed.append(int(max(0, min(n_total - 1, v))))
+                            except ValueError:
+                                errors.append(f"行{lineno}: {line!r} は無効")
+                        if parsed:
+                            st.session_state.sim_order = parsed
+                            st.session_state.sim_order_source = "paste"
+                            st.session_state.sim_results = []
+                            st.session_state.cache_hit_count = {}
+                            st.rerun()
+                        if errors:
+                            st.warning("スキップした行: " + " / ".join(errors))
+                        
+                with tp_c2:
+                    st.markdown(
+                        f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                        f"color:#8888aa;padding-top:.5rem;'>"
+                        f"{len(pasted.splitlines())} 行入力 → "
+                        f"適用後 {len([l for l in pasted.splitlines() if l.strip() and not l.strip().startswith('#')])} ステップ</p>",
+                        unsafe_allow_html=True)
+
+        # ── Run Simulation ボタン ─────────────────────────────────
         if st.button("▶▶  Run Simulation", type="primary", use_container_width=True):
-            order = list(range(n_total))   # 将来: 順序オプションをここで差し替え
-            sim_results, final_states = run_simulation(
+            order = st.session_state.sim_order or list(range(n_total))
+            sim_results, final_states, hit_count = run_simulation(
                 st.session_state.graph_edges, n_total,
                 st.session_state.node_states, ttype,
-                order, st.session_state.sim_create_cache)
+                order,
+                cache_skip_src=st.session_state.sim_cache_skip_src,
+                cache_prob=st.session_state.sim_cache_prob)
             st.session_state.sim_results        = sim_results
             st.session_state.sim_initial_states = st.session_state.node_states.copy()
             st.session_state.node_states        = final_states
+            st.session_state.cache_hit_count    = {}   # まず0クリア
+            st.session_state.cache_hit_count = hit_count
             st.rerun()
 
     # 経路計算
@@ -601,6 +816,10 @@ if st.session_state.graph_drawn:
             highlight_paths = [p for _,_,p in path_results if p]
         else:
             highlight_paths = [p for _,p in path_results if p]
+
+    # all_dynamic で sim 未実行のときは経路・星を一切表示しない
+    if src == "all_dynamic" and not st.session_state.sim_results:
+        highlight_paths = []
 
     # 図
     fig = make_fig(st.session_state.graph_edges, pos_dict,
@@ -630,37 +849,55 @@ if st.session_state.graph_drawn:
 
             trace_node_lists = []
 
-            if src in ("all_static", "all_dynamic"):
-                # make_fig: source in all → PATH_SRC (path_sources が空でなければ)
+            # make_fig のバケツ分けを完全に再現する
+            # make_fig では source が整数のときのみ i==source でバケツ"source"に振り分ける。
+            # all_static/all_dynamic のときは source が文字列なので i==source は常にFalse →
+            # 全ノードが Orig/Cache/waypoint/Nothing に振り分けられる。
+            is_all_mode = src in ("all_static", "all_dynamic")
+            # source バケツに入るノード（整数ソース時のみ）
+            source_node_id = src if not is_all_mode else None
+
+            if is_all_mode:
+                # PATH_SRC トレース（2ホップ以上の経路出発点、make_figと同じ集合）
                 path_sources = sorted(set(
                     path[0] for path in highlight_paths if path and len(path) > 1))
                 if path_sources:
                     trace_node_lists.append((ci, path_sources)); ci += 1
+                # PATH_SRC ノードは以下のバケツから除外（make_figと同じ）
+                path_sources_set_click = set(path_sources)
             else:
-                # make_fig: source != "all" → source ノード1つ (star)
+                # 単一ソース★トレース
                 trace_node_lists.append((ci, [src])); ci += 1
+                path_sources_set_click = set()
 
-            # Orig (source以外)
+            # Orig: source・PATH_SRC バケツ以外
             orig_l = sorted([i for i in range(n_total)
-                             if states.get(i,"Nothing")=="Orig"
-                             and (True if src in ("all_static","all_dynamic") else i!=src)])
+                             if states.get(i, "Nothing") == "Orig"
+                             and i != source_node_id
+                             and i not in path_sources_set_click])
             if orig_l: trace_node_lists.append((ci, orig_l)); ci += 1
-            # Cache (source以外)
+            
+            # Cache: source・PATH_SRC バケツ以外
             cach_l = sorted([i for i in range(n_total)
-                             if states.get(i,"Nothing")=="Cache"
-                             and (True if src in ("all_static","all_dynamic") else i!=src)])
+                             if states.get(i, "Nothing") == "Cache"
+                             and i != source_node_id
+                             and i not in path_sources_set_click])
             if cach_l: trace_node_lists.append((ci, cach_l)); ci += 1
-            # waypoint: Nothing & in path_nodes_set (source以外)
+
+            # waypoint: Nothing & 経路上（source・PATH_SRC バケツ以外）
             wp_l = sorted([i for i in range(n_total)
-                           if states.get(i,"Nothing")=="Nothing"
+                           if states.get(i, "Nothing") == "Nothing"
                            and i in path_nodes_set
-                           and (True if src=="all" else i!=src)])
+                           and i != source_node_id
+                           and i not in path_sources_set_click])
             if wp_l: trace_node_lists.append((ci, wp_l)); ci += 1
-            # Nothing: それ以外
+
+            # Nothing: それ以外（source・PATH_SRC バケツ以外）
             no_l = sorted([i for i in range(n_total)
-                           if states.get(i,"Nothing")=="Nothing"
+                           if states.get(i, "Nothing") == "Nothing"
                            and i not in path_nodes_set
-                           and (True if src=="all" else i!=src)])
+                           and i != source_node_id
+                           and i not in path_sources_set_click])
             if no_l: trace_node_lists.append((ci, no_l)); ci += 1
 
             for curve_ci, node_list in trace_node_lists:
@@ -669,6 +906,8 @@ if st.session_state.graph_drawn:
                     cur = states.get(nid, "Nothing")
                     nxt = STATES[(STATES.index(cur)+1) % len(STATES)]
                     st.session_state.node_states[nid] = nxt
+                    st.session_state.sim_results = []   # node_states変更 → 旧sim無効
+                    st.session_state.cache_hit_count  = {}
                     st.rerun()
 
     # 経路テキスト
