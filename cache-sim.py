@@ -821,8 +821,10 @@ if st.session_state.graph_drawn:
             with sl_c2:
                 new_step = st.slider(
                     "ステップ", 0, n_steps - 1,
-                    st.session_state.sim_step,
-                    key="_step_slider")
+                    value=st.session_state.sim_step)
+                if new_step != st.session_state.sim_step:
+                    st.session_state.sim_step = new_step
+                    st.rerun()
                 cur = st.session_state.sim_results[st.session_state.sim_step]
                 st.markdown(
                     f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
