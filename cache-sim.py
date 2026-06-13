@@ -79,6 +79,7 @@ def _init():
                 sim_order=[], sim_rand_steps=10, sim_gen_mode=0,
                 cache_hit_count={},
                 sim_cache_skip_src=False,
+                sim_step=0,
                 sim_cache_prob=100, # create_cache フラグ廃止、確率0%=無効
                 sim_order_source="editor")
     for k, v in defs.items():
@@ -251,15 +252,19 @@ def run_simulation(edges, n_total, initial_states, target_type,
                             "hit_count_snap": hit_count.copy()})
     return sim_results, working, hit_count
 
-def replay_states(initial_states, sim_results, create_cache, up_to_step):
-    """initial_states + sim_results から up_to_step 実行後の状態を再現する"""
+def replay_states(initial_states, sim_results, up_to_step):
+    """sim_results の newly_cached を使って up_to_step 時点の状態を再現する。
+    cache_skip_src・cache_prob の影響を正確に反映できる。
+    up_to_step=-1 なら initial_states をそのまま返す。"""
+    if up_to_step < 0:
+        return initial_states.copy(), {}
     working = initial_states.copy()
+    snap = {}
     for r in sim_results[:up_to_step + 1]:
-        if create_cache and r["path"]:
-            for nid in r["path"]:
-                if working[nid] == "Nothing":
-                    working[nid] = "Cache"
-    return working
+        for nid in r.get("cached", []):
+            working[nid] = "Cache"
+        snap = r.get("hit_count_snap", {})
+    return working, snap
 
 # ─── Plotly図 ────────────────────────────────────────────────
 def make_fig(edges, pos, node_states, n_total, model_name,
@@ -801,7 +806,38 @@ if st.session_state.graph_drawn:
             st.session_state.node_states        = final_states
             st.session_state.cache_hit_count    = {}   # まず0クリア
             st.session_state.cache_hit_count = hit_count
+            st.session_state.sim_step           = len(sim_results) - 1
             st.rerun()
+
+        # ── ステップスライダー ────────────────────────────────
+        if st.session_state.sim_results:
+            n_steps = len(st.session_state.sim_results)
+            sl_c1, sl_c2, sl_c3 = st.columns([1, 4, 1])
+            with sl_c1:
+                if st.button("◀", use_container_width=True, key="_step_back",
+                             disabled=st.session_state.sim_step <= 0):
+                    st.session_state.sim_step -= 1
+                    st.rerun()
+            with sl_c2:
+                new_step = st.slider(
+                    "ステップ", 0, n_steps - 1,
+                    st.session_state.sim_step,
+                    key="_step_slider")
+                cur = st.session_state.sim_results[st.session_state.sim_step]
+                st.markdown(
+                    f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                    f"color:#c4b5fd;margin:-.4rem 0 .2rem;text-align:center;'>"
+                    f"Step {st.session_state.sim_step} &nbsp;·&nbsp; "
+                    f"★{cur['src']} → ◆{cur['tgt']}</p>",
+                    unsafe_allow_html=True)
+                if new_step != st.session_state.sim_step:
+                    st.session_state.sim_step = new_step
+                    st.rerun()
+            with sl_c3:
+                if st.button("▶", use_container_width=True, key="_step_fwd",
+                             disabled=st.session_state.sim_step >= n_steps - 1):
+                    st.session_state.sim_step += 1
+                    st.rerun()
 
     # 経路計算
     if src == "all_dynamic" and st.session_state.sim_results:
@@ -809,6 +845,17 @@ if st.session_state.graph_drawn:
         path_results    = [(r["src"], r["tgt"], r["path"])
                            for r in st.session_state.sim_results]
         highlight_paths = [r["path"] for r in st.session_state.sim_results if r["path"]]
+        # ステップ表示モード：該当ステップの経路のみハイライト
+        step_idx = st.session_state.sim_step
+        step_r   = st.session_state.sim_results[step_idx]
+        highlight_paths = [step_r["path"]] if step_r["path"] else []
+        path_results    = [(step_r["src"], step_r["tgt"], step_r["path"])]
+        # ステップ時点の node_states と hit_count を復元
+        step_states, step_snap = replay_states(
+            st.session_state.sim_initial_states,
+            st.session_state.sim_results,
+            step_idx)
+        st.session_state.cache_hit_count = step_snap
     else:
         path_results = shortest_paths(st.session_state.graph_edges, n_total,
                                       st.session_state.node_states, src, ttype)
@@ -821,9 +868,14 @@ if st.session_state.graph_drawn:
     if src == "all_dynamic" and not st.session_state.sim_results:
         highlight_paths = []
 
+    # グラフ描画に使う states を決定
+    display_states = (step_states
+                      if src == "all_dynamic" and st.session_state.sim_results
+                      else st.session_state.node_states)
+
     # 図
     fig = make_fig(st.session_state.graph_edges, pos_dict,
-                   st.session_state.node_states, n_total,
+                   display_states, n_total,
                    st.session_state.last_model, src, highlight_paths)
 
     event = st.plotly_chart(fig, use_container_width=True,
@@ -912,8 +964,15 @@ if st.session_state.graph_drawn:
 
     # 経路テキスト
     if src == "all_dynamic" and st.session_state.sim_results:
-        render_sim_results(st.session_state.sim_results, ttype,
-                           st.session_state.node_states)
+        # ステップ表示：そのステップ1件だけを render_sim_results で表示
+        render_sim_results(
+            [st.session_state.sim_results[st.session_state.sim_step]],
+            ttype,
+            display_states)
+        # 全ステップサマリを折りたたみで表示
+        with st.expander("📋 全ステップ表示", expanded=False):
+            render_sim_results(st.session_state.sim_results, ttype,
+                               st.session_state.node_states)
     else:
         render_paths(path_results, src, ttype, st.session_state.node_states)
 
