@@ -23,6 +23,7 @@ h1,h2,h3{font-family:'Syne',sans-serif!important;font-weight:800!important;lette
     letter-spacing:0.1em;text-transform:uppercase;}
 .badge-ba{background:#7c6af7;color:#fff;}
 .badge-sf{background:#06b6d4;color:#fff;}
+.badge-grid{background:#f59e0b;color:#fff;}
 .info-card{background:#12121e;border:1px solid #2a2a3e;border-radius:10px;
     padding:.9rem 1.2rem;font-family:'Space Mono',monospace;font-size:0.76rem;
     color:#8888aa;margin-bottom:.8rem;}
@@ -81,6 +82,7 @@ def _init():
                 sim_cache_skip_src=False,
                 sim_step=0,
                 sim_cache_prob=100, # create_cache フラグ廃止、確率0%=無効
+                grid_rows=3, grid_cols=3,
                 sim_order_source="editor")
     for k, v in defs.items():
         if k not in st.session_state:
@@ -91,23 +93,13 @@ _init()
 st.markdown("## 🕸️ Cache Simulator")
 st.markdown("<p style='font-family:Space Mono,monospace;font-size:0.78rem;"
             "color:#555577;margin-top:-.5rem;'>"
-            "BA / Scale-Free · Orig / Cache / Nothing · shortest path finder</p>",
+            "BA / Scale-Free / Grid · Orig / Cache / Nothing · shortest path finder</p>",
             unsafe_allow_html=True)
 st.divider()
 
-# ─── スライダー ──────────────────────────────────────────────
-c1, c2 = st.columns(2)
-with c1:
-    n_nodes = st.slider("Node count", 1, 20, 10, 1)
-with c2:
-    max_links = n_nodes*(n_nodes-1)//2 if n_nodes>1 else 1
-    min_links = n_nodes if n_nodes <= max_links else max_links
-    pv = max(min_links, min(st.session_state.get("_lv", min_links), max_links))
-    n_links = st.slider("Link count", min_links, max(min_links,max_links), pv, 1, key="_lv")
-
 # ─── モデルボタン ────────────────────────────────────────────
 st.markdown("")
-cb1, cb2, _ = st.columns([1,1,2])
+cb1, cb2, cb3, _ = st.columns([1,1,1,1])
 with cb1:
     if st.button("⬡  BA Model", use_container_width=True,
                  type="primary" if st.session_state.model_type=="BA Model" else "secondary"):
@@ -116,11 +108,42 @@ with cb2:
     if st.button("✦  Scale-Free", use_container_width=True,
                  type="primary" if st.session_state.model_type=="Scale-Free" else "secondary"):
         st.session_state.model_type = "Scale-Free"
+with cb3:
+    if st.button("⊞  Grid", use_container_width=True,
+                 type="primary" if st.session_state.model_type=="Grid" else "secondary"):
+        st.session_state.model_type = "Grid"
 
-bc = "badge-ba" if st.session_state.model_type=="BA Model" else "badge-sf"
+bc = {"BA Model": "badge-ba", "Scale-Free": "badge-sf", "Grid": "badge-grid"}.get(
+     st.session_state.model_type, "badge-ba")
 st.markdown(f"<p style='margin-top:.4rem;'>現在のモデル: "
             f"<span class='model-badge {bc}'>{st.session_state.model_type}</span></p>",
             unsafe_allow_html=True)
+
+# ─── スライダー ──────────────────────────────────────────────
+is_grid = st.session_state.model_type == "Grid"
+if not is_grid:
+    c1, c2 = st.columns(2)
+    with c1:
+        n_nodes = st.slider("Node count", 1, 20, 10, 1)
+    with c2:
+        max_links = n_nodes*(n_nodes-1)//2 if n_nodes>1 else 1
+        min_links = n_nodes if n_nodes <= max_links else max_links
+        pv = max(min_links, min(st.session_state.get("_lv", min_links), max_links))
+        n_links = st.slider("Link count", min_links, max(min_links,max_links),
+                            pv, 1, key="_lv")
+else:
+    gc1, gc2 = st.columns(2)
+    with gc1:
+        grid_rows = st.slider("行数 (Rows)", 2, 10,
+                              st.session_state.grid_rows, 1, key="_gr")
+        st.session_state.grid_rows = grid_rows
+    with gc2:
+        grid_cols = st.slider("列数 (Cols)", 2, 10,
+                              st.session_state.grid_cols, 1, key="_gc")
+        st.session_state.grid_cols = grid_cols
+    n_nodes = grid_rows * grid_cols
+    n_links = ((grid_rows - 1) * grid_cols
+               + grid_rows * (grid_cols - 1))
 
 # ─── グラフ生成 ──────────────────────────────────────────────
 def _adjust_edges(G, target, seed):
@@ -162,6 +185,13 @@ def build_sf(n, target, seed):
             except: pass
     G = best_G.copy() if best_G else nx.path_graph(n)
     return _adjust_edges(G, target, seed)
+
+def build_grid(rows, cols):
+    G = nx.grid_2d_graph(rows, cols)
+    # ノードを 0..n-1 の整数に付け替える
+    mapping = {(r, c): r * cols + c for r in range(rows) for c in range(cols)}
+    G = nx.relabel_nodes(G, mapping)
+    return G
 
 def layout(G):
     n = G.number_of_nodes()
@@ -546,6 +576,8 @@ st.markdown(f"""<div class="info-card">
     Nodes: <span>{n_nodes}</span> &nbsp;|&nbsp;
     Links: <span>{n_links}</span> &nbsp;|&nbsp;
     Model: <span>{st.session_state.model_type}</span>
+    {"&nbsp;|&nbsp; Grid: <span>" + f"{st.session_state.grid_rows}×{st.session_state.grid_cols}</span>"
+     if is_grid else ""}
     </div>""", unsafe_allow_html=True)
 
 db1, db2 = st.columns([2,1])
@@ -553,15 +585,25 @@ with db1:
     draw_clicked = st.button("▶  Draw Network", type="primary", use_container_width=True)
 with db2:
     regen_clicked = st.button("🔀  Re-generate", use_container_width=True,
-                              disabled=not st.session_state.graph_drawn)
+                              disabled=not st.session_state.graph_drawn
+                              or is_grid)
 
 st.markdown('<p class="hint">💡 ノードクリック: Nothing → Orig → Cache → Nothing …　'
             '｜　Re-generate: 同条件で別グラフを生成</p>', unsafe_allow_html=True)
 
 def do_generate(seed):
-    model = st.session_state.model_type
-    G = build_ba(n_nodes,n_links,seed) if model=="BA Model" else build_sf(n_nodes,n_links,seed)
-    pos = layout(G)
+    model  = st.session_state.model_type
+    if model == "Grid":
+        G = build_grid(st.session_state.grid_rows, st.session_state.grid_cols)
+        rows, cols = st.session_state.grid_rows, st.session_state.grid_cols
+        pos = {r * cols + c: (c, -r)
+               for r in range(rows) for c in range(cols)}
+    else:
+        if model == "BA Model":
+            G = build_ba(n_nodes, n_links, seed)
+        else:
+            G = build_sf(n_nodes, n_links, seed)
+        pos = layout(G)
     st.session_state.graph_edges  = list(G.edges())
     st.session_state.graph_pos    = {i:list(pos[i]) for i in G.nodes()}
     st.session_state.node_states  = {i:"Nothing" for i in G.nodes()}
