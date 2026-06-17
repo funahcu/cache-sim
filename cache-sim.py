@@ -146,13 +146,13 @@ with st.expander("⚙️ ネットワーク設定", expanded=not st.session_stat
                    + grid_rows * (grid_cols - 1))
 
     st.divider()
+    grid_info = (f'&nbsp;|&nbsp; Grid: <span>{st.session_state.grid_rows}'
+                 f'×{st.session_state.grid_cols}</span>') if is_grid else ''
     st.markdown(f"""<div class="info-card">
         Nodes: <span>{n_nodes}</span> &nbsp;|&nbsp;
         Links: <span>{n_links}</span> &nbsp;|&nbsp;
         Model: <span>{st.session_state.model_type}</span>
-        {"&nbsp;|&nbsp; Grid: <span>" + f"{st.session_state.grid_rows}×{st.session_state.grid_cols}</span>"
-         if is_grid else ""}
-        </div>""", unsafe_allow_html=True)
+        {grid_info}</div>""", unsafe_allow_html=True)
 
     db1, db2 = st.columns([2,1])
     with db1:
