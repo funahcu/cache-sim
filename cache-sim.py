@@ -97,53 +97,73 @@ st.markdown("<p style='font-family:Space Mono,monospace;font-size:0.78rem;"
             unsafe_allow_html=True)
 st.divider()
 
-# ─── モデルボタン ────────────────────────────────────────────
-st.markdown("")
-cb1, cb2, cb3, _ = st.columns([1,1,1,1])
-with cb1:
-    if st.button("⬡  BA Model", use_container_width=True,
-                 type="primary" if st.session_state.model_type=="BA Model" else "secondary"):
-        st.session_state.model_type = "BA Model"
-with cb2:
-    if st.button("✦  Scale-Free", use_container_width=True,
-                 type="primary" if st.session_state.model_type=="Scale-Free" else "secondary"):
-        st.session_state.model_type = "Scale-Free"
-with cb3:
-    if st.button("⊞  Grid", use_container_width=True,
-                 type="primary" if st.session_state.model_type=="Grid" else "secondary"):
-        st.session_state.model_type = "Grid"
+# ─── ネットワーク設定（Draw後は折りたたみ） ─────────────────────
+with st.expander("⚙️ ネットワーク設定", expanded=not st.session_state.graph_drawn):
+    st.markdown("")
+    cb1, cb2, cb3, _ = st.columns([1,1,1,1])
+    with cb1:
+        if st.button("⬡  BA Model", use_container_width=True,
+                     type="primary" if st.session_state.model_type=="BA Model" else "secondary"):
+            st.session_state.model_type = "BA Model"
+    with cb2:
+        if st.button("✦  Scale-Free", use_container_width=True,
+                     type="primary" if st.session_state.model_type=="Scale-Free" else "secondary"):
+            st.session_state.model_type = "Scale-Free"
+    with cb3:
+        if st.button("⊞  Grid", use_container_width=True,
+                     type="primary" if st.session_state.model_type=="Grid" else "secondary"):
+            st.session_state.model_type = "Grid"
 
-bc = {"BA Model": "badge-ba", "Scale-Free": "badge-sf", "Grid": "badge-grid"}.get(
-     st.session_state.model_type, "badge-ba")
-st.markdown(f"<p style='margin-top:.4rem;'>現在のモデル: "
-            f"<span class='model-badge {bc}'>{st.session_state.model_type}</span></p>",
-            unsafe_allow_html=True)
+    bc = {"BA Model": "badge-ba", "Scale-Free": "badge-sf", "Grid": "badge-grid"}.get(
+         st.session_state.model_type, "badge-ba")
+    st.markdown(f"<p style='margin-top:.4rem;'>現在のモデル: "
+                f"<span class='model-badge {bc}'>{st.session_state.model_type}</span></p>",
+                unsafe_allow_html=True)
 
-# ─── スライダー ──────────────────────────────────────────────
-is_grid = st.session_state.model_type == "Grid"
-if not is_grid:
-    c1, c2 = st.columns(2)
-    with c1:
-        n_nodes = st.slider("Node count", 1, 20, 10, 1)
-    with c2:
-        max_links = n_nodes*(n_nodes-1)//2 if n_nodes>1 else 1
-        min_links = n_nodes if n_nodes <= max_links else max_links
-        pv = max(min_links, min(st.session_state.get("_lv", min_links), max_links))
-        n_links = st.slider("Link count", min_links, max(min_links,max_links),
-                            pv, 1, key="_lv")
-else:
-    gc1, gc2 = st.columns(2)
-    with gc1:
-        grid_rows = st.slider("行数 (Rows)", 2, 10,
-                              st.session_state.grid_rows, 1, key="_gr")
-        st.session_state.grid_rows = grid_rows
-    with gc2:
-        grid_cols = st.slider("列数 (Cols)", 2, 10,
-                              st.session_state.grid_cols, 1, key="_gc")
-        st.session_state.grid_cols = grid_cols
-    n_nodes = grid_rows * grid_cols
-    n_links = ((grid_rows - 1) * grid_cols
-               + grid_rows * (grid_cols - 1))
+    is_grid = st.session_state.model_type == "Grid"
+    if not is_grid:
+        c1, c2 = st.columns(2)
+        with c1:
+            n_nodes = st.slider("Node count", 1, 20, 10, 1)
+        with c2:
+            max_links = n_nodes*(n_nodes-1)//2 if n_nodes>1 else 1
+            min_links = n_nodes if n_nodes <= max_links else max_links
+            pv = max(min_links, min(st.session_state.get("_lv", min_links), max_links))
+            n_links = st.slider("Link count", min_links, max(min_links,max_links),
+                                pv, 1, key="_lv")
+    else:
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            grid_rows = st.slider("行数 (Rows)", 2, 10,
+                                  st.session_state.grid_rows, 1, key="_gr")
+            st.session_state.grid_rows = grid_rows
+        with gc2:
+            grid_cols = st.slider("列数 (Cols)", 2, 10,
+                                  st.session_state.grid_cols, 1, key="_gc")
+            st.session_state.grid_cols = grid_cols
+        n_nodes = grid_rows * grid_cols
+        n_links = ((grid_rows - 1) * grid_cols
+                   + grid_rows * (grid_cols - 1))
+
+    st.divider()
+    st.markdown(f"""<div class="info-card">
+        Nodes: <span>{n_nodes}</span> &nbsp;|&nbsp;
+        Links: <span>{n_links}</span> &nbsp;|&nbsp;
+        Model: <span>{st.session_state.model_type}</span>
+        {"&nbsp;|&nbsp; Grid: <span>" + f"{st.session_state.grid_rows}×{st.session_state.grid_cols}</span>"
+         if is_grid else ""}
+        </div>""", unsafe_allow_html=True)
+
+    db1, db2 = st.columns([2,1])
+    with db1:
+        draw_clicked = st.button("▶  Draw Network", type="primary", use_container_width=True)
+    with db2:
+        regen_clicked = st.button("🔀  Re-generate", use_container_width=True,
+                                  disabled=not st.session_state.graph_drawn
+                                  or is_grid)
+
+    st.markdown('<p class="hint">💡 ノードクリック: Nothing → Orig → Cache → Nothing …　'
+                '｜　Re-generate: 同条件で別グラフを生成</p>', unsafe_allow_html=True)
 
 # ─── グラフ生成 ──────────────────────────────────────────────
 def _adjust_edges(G, target, seed):
@@ -570,27 +590,6 @@ def render_sim_results(sim_results, target_type, node_states_final):
         + "<br>".join(lines) + "</div>",
         unsafe_allow_html=True)
 
-# ─── Draw / Regen ─────────────────────────────────────────────
-st.divider()
-st.markdown(f"""<div class="info-card">
-    Nodes: <span>{n_nodes}</span> &nbsp;|&nbsp;
-    Links: <span>{n_links}</span> &nbsp;|&nbsp;
-    Model: <span>{st.session_state.model_type}</span>
-    {"&nbsp;|&nbsp; Grid: <span>" + f"{st.session_state.grid_rows}×{st.session_state.grid_cols}</span>"
-     if is_grid else ""}
-    </div>""", unsafe_allow_html=True)
-
-db1, db2 = st.columns([2,1])
-with db1:
-    draw_clicked = st.button("▶  Draw Network", type="primary", use_container_width=True)
-with db2:
-    regen_clicked = st.button("🔀  Re-generate", use_container_width=True,
-                              disabled=not st.session_state.graph_drawn
-                              or is_grid)
-
-st.markdown('<p class="hint">💡 ノードクリック: Nothing → Orig → Cache → Nothing …　'
-            '｜　Re-generate: 同条件で別グラフを生成</p>', unsafe_allow_html=True)
-
 def do_generate(seed):
     model  = st.session_state.model_type
     if model == "Grid":
@@ -668,30 +667,6 @@ if st.session_state.graph_drawn:
                              index=TARGET_OPTIONS.index(st.session_state.target_type),
                              key="_tt")
         st.session_state.target_type = ttype
-    with cc3:
-        st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            if st.button("All Orig", use_container_width=True):
-                for k in st.session_state.node_states: st.session_state.node_states[k]="Orig"
-                st.session_state.sim_results    = []
-                st.session_state.cache_hit_count = {}
-                st.rerun()
-        with col_b:
-            if st.button("All None", use_container_width=True):
-                for k in st.session_state.node_states: st.session_state.node_states[k]="Nothing"
-                st.session_state.sim_results    = []
-                st.session_state.cache_hit_count = {}
-                st.rerun()
-        with col_c:
-            if st.button("Src→None", use_container_width=True,
-                         disabled=not st.session_state.sim_order):
-                for nid in set(st.session_state.sim_order):
-                    if st.session_state.node_states.get(nid) not in ("Orig",):
-                        st.session_state.node_states[nid] = "Nothing"
-                st.session_state.sim_results     = []
-                st.session_state.cache_hit_count = {}
-                st.rerun()
 
     # Dynamic モードのオプションと実行ボタン
     if src == "all_dynamic":
@@ -712,6 +687,22 @@ if st.session_state.graph_drawn:
                 "color:#8888aa;margin:.6rem 0 .2rem;'>アクセスパターン</p>",
                 unsafe_allow_html=True)
 
+            # sim_order が空ならデフォルトで初期化
+            if not st.session_state.sim_order:
+                st.session_state.sim_order = list(range(n_total))
+            
+            # ── 現在の有効ソース表示 ──────────────────────────────
+            src_label = "🎲 エディタ" if st.session_state.sim_order_source == "editor" else "📋 テキスト貼付"
+            st.markdown(
+                f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                f"color:#8888aa;margin:.2rem 0 .4rem;'>"
+                f"現在のアクセスパターン: "
+                f"<span style='color:#c4b5fd;font-weight:700;'>{src_label}</span></p>",
+                unsafe_allow_html=True)
+
+            # ── st.data_editor でパターン表示・編集 ──────────────
+            import pandas as pd  # noqa: PLC0415
+            tab_paste, tab_editor = st.tabs(["📋 テキスト貼付", "🎲 エディタ"])
             # ── デフォルト / ランダム生成 ────────────────────────
             pat_c1, pat_c2, pat_c3 = st.columns([1.2, 1, 1])
             with pat_c1:
@@ -738,23 +729,8 @@ if st.session_state.graph_drawn:
                             rng.integers(0, n_total, size=st.session_state.sim_rand_steps))
                     else:
                         st.session_state.sim_order = list(range(n_total))
-
-            # sim_order が空ならデフォルトで初期化
-            if not st.session_state.sim_order:
-                st.session_state.sim_order = list(range(n_total))
-            
-            # ── 現在の有効ソース表示 ──────────────────────────────
-            src_label = "🎲 エディタ" if st.session_state.sim_order_source == "editor" else "📋 テキスト貼付"
-            st.markdown(
-                f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
-                f"color:#8888aa;margin:.2rem 0 .4rem;'>"
-                f"現在のアクセスパターン: "
-                f"<span style='color:#c4b5fd;font-weight:700;'>{src_label}</span></p>",
-                unsafe_allow_html=True)
-
-            # ── st.data_editor でパターン表示・編集 ──────────────
-            import pandas as pd  # noqa: PLC0415
-            tab_editor, tab_paste = st.tabs(["🎲 エディタ", "📋 テキスト貼付"])
+                    st.session_state.sim_order_source = "editor"
+                    st.rerun()
 
             with tab_editor:
                 order_df = pd.DataFrame({
@@ -922,8 +898,29 @@ if st.session_state.graph_drawn:
                    display_states, n_total,
                    st.session_state.last_model, src, highlight_paths)
 
-    event = st.plotly_chart(fig, use_container_width=True,
-                            on_select="rerun", key="net_plot")
+    graph_col, btn_col = st.columns([4, 1.2])
+    with graph_col:
+        event = st.plotly_chart(fig, use_container_width=True,
+                                on_select="rerun", key="net_plot")
+    with btn_col:
+        if st.button("All Orig", use_container_width=True):
+            for k in st.session_state.node_states: st.session_state.node_states[k]="Orig"
+            st.session_state.sim_results     = []
+            st.session_state.cache_hit_count = {}
+            st.rerun()
+        if st.button("All None", use_container_width=True):
+            for k in st.session_state.node_states: st.session_state.node_states[k]="Nothing"
+            st.session_state.sim_results     = []
+            st.session_state.cache_hit_count = {}
+            st.rerun()
+        if st.button("Src→None", use_container_width=True,
+                     disabled=not st.session_state.sim_order):
+            for nid in set(st.session_state.sim_order):
+                if st.session_state.node_states.get(nid) not in ("Orig",):
+                    st.session_state.node_states[nid] = "Nothing"
+            st.session_state.sim_results     = []
+            st.session_state.cache_hit_count = {}
+            st.rerun()
 
     # クリック処理 — make_fig と同じtrace順を再現してnode_id逆引き
     if event and event.get("selection"):
