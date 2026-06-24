@@ -107,18 +107,22 @@ with st.expander("⚙️ ネットワーク設定", expanded=not st.session_stat
         if st.button("⬡  BA Model", use_container_width=True,
                      type="primary" if st.session_state.model_type=="BA Model" else "secondary"):
             st.session_state.model_type = "BA Model"
+            st.rerun()
     with cb2:
         if st.button("✦  Scale-Free", use_container_width=True,
                      type="primary" if st.session_state.model_type=="Scale-Free" else "secondary"):
             st.session_state.model_type = "Scale-Free"
+            st.rerun()
     with cb3:
         if st.button("⊞  Grid", use_container_width=True,
                      type="primary" if st.session_state.model_type=="Grid" else "secondary"):
             st.session_state.model_type = "Grid"
+            st.rerun()
     with cb4:
         if st.button("〜  WS", use_container_width=True,
                      type="primary" if st.session_state.model_type=="WS" else "secondary"):
             st.session_state.model_type = "WS"
+            st.rerun()
 
     bc = {"BA Model": "badge-ba", "Scale-Free": "badge-sf",
           "Grid": "badge-grid", "WS": "badge-ws"}.get(
