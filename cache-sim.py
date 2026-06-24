@@ -24,6 +24,7 @@ h1,h2,h3{font-family:'Syne',sans-serif!important;font-weight:800!important;lette
 .badge-ba{background:#7c6af7;color:#fff;}
 .badge-sf{background:#06b6d4;color:#fff;}
 .badge-grid{background:#f59e0b;color:#fff;}
+.badge-ws{background:#10b981;color:#fff;}
 .info-card{background:#12121e;border:1px solid #2a2a3e;border-radius:10px;
     padding:.9rem 1.2rem;font-family:'Space Mono',monospace;font-size:0.76rem;
     color:#8888aa;margin-bottom:.8rem;}
@@ -83,6 +84,7 @@ def _init():
                 sim_step=0,
                 sim_cache_prob=100, # create_cache フラグ廃止、確率0%=無効
                 grid_rows=3, grid_cols=3,
+                ws_k=4, ws_p=10,
                 sim_order_source="editor")
     for k, v in defs.items():
         if k not in st.session_state:
@@ -100,7 +102,7 @@ st.divider()
 # ─── ネットワーク設定（Draw後は折りたたみ） ─────────────────────
 with st.expander("⚙️ ネットワーク設定", expanded=not st.session_state.graph_drawn):
     st.markdown("")
-    cb1, cb2, cb3, _ = st.columns([1,1,1,1])
+    cb1, cb2, cb3, cb4, _ = st.columns([1,1,1,1,1])
     with cb1:
         if st.button("⬡  BA Model", use_container_width=True,
                      type="primary" if st.session_state.model_type=="BA Model" else "secondary"):
@@ -113,15 +115,21 @@ with st.expander("⚙️ ネットワーク設定", expanded=not st.session_stat
         if st.button("⊞  Grid", use_container_width=True,
                      type="primary" if st.session_state.model_type=="Grid" else "secondary"):
             st.session_state.model_type = "Grid"
+    with cb4:
+        if st.button("〜  WS", use_container_width=True,
+                     type="primary" if st.session_state.model_type=="WS" else "secondary"):
+            st.session_state.model_type = "WS"
 
-    bc = {"BA Model": "badge-ba", "Scale-Free": "badge-sf", "Grid": "badge-grid"}.get(
+    bc = {"BA Model": "badge-ba", "Scale-Free": "badge-sf",
+          "Grid": "badge-grid", "WS": "badge-ws"}.get(
          st.session_state.model_type, "badge-ba")
     st.markdown(f"<p style='margin-top:.4rem;'>現在のモデル: "
                 f"<span class='model-badge {bc}'>{st.session_state.model_type}</span></p>",
                 unsafe_allow_html=True)
 
     is_grid = st.session_state.model_type == "Grid"
-    if not is_grid:
+    is_ws   = st.session_state.model_type == "WS"
+    if not is_grid and not is_ws:
         c1, c2 = st.columns(2)
         with c1:
             n_nodes = st.slider("Node count", 1, 20, 10, 1)
@@ -131,7 +139,7 @@ with st.expander("⚙️ ネットワーク設定", expanded=not st.session_stat
             pv = max(min_links, min(st.session_state.get("_lv", min_links), max_links))
             n_links = st.slider("Link count", min_links, max(min_links,max_links),
                                 pv, 1, key="_lv")
-    else:
+    elif is_grid:
         gc1, gc2 = st.columns(2)
         with gc1:
             grid_rows = st.slider("行数 (Rows)", 2, 10,
@@ -144,15 +152,39 @@ with st.expander("⚙️ ネットワーク設定", expanded=not st.session_stat
         n_nodes = grid_rows * grid_cols
         n_links = ((grid_rows - 1) * grid_cols
                    + grid_rows * (grid_cols - 1))
+    else:  # is_ws
+        ws1, ws2, ws3 = st.columns(3)
+        with ws1:
+            n_nodes = st.slider("Node count", 4, 20, 10, 1, key="_ws_n")
+        with ws2:
+            ws_k = st.select_slider(
+                "近隣数 k", options=[2, 4, 6, 8],
+                value=st.session_state.ws_k, key="_ws_k",
+                format_func=lambda x: f"k={x}")
+            st.session_state.ws_k = ws_k
+        with ws3:
+            ws_p = st.select_slider(
+                "rewiring p",
+                options=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+                value=st.session_state.ws_p, key="_ws_p",
+                format_func=lambda x: f"p={x/100:.1f}")
+            st.session_state.ws_p = ws_p
+        k_eff = min(ws_k, n_nodes - 1)
+        if k_eff % 2 != 0:
+            k_eff = max(2, k_eff - 1)
+        n_links = n_nodes * k_eff // 2
 
     st.divider()
     grid_info = (f'&nbsp;|&nbsp; Grid: <span>{st.session_state.grid_rows}'
                  f'×{st.session_state.grid_cols}</span>') if is_grid else ''
+    ws_info   = (f'&nbsp;|&nbsp; k: <span>{st.session_state.ws_k}</span>'
+                 f'&nbsp;|&nbsp; p: <span>{st.session_state.ws_p/100:.1f}</span>') 
+
     st.markdown(f"""<div class="info-card">
         Nodes: <span>{n_nodes}</span> &nbsp;|&nbsp;
         Links: <span>{n_links}</span> &nbsp;|&nbsp;
         Model: <span>{st.session_state.model_type}</span>
-        {grid_info}</div>""", unsafe_allow_html=True)
+        {grid_info}{ws_info}</div>""", unsafe_allow_html=True)
 
     db1, db2 = st.columns([2,1])
     with db1:
@@ -212,6 +244,16 @@ def build_grid(rows, cols):
     mapping = {(r, c): r * cols + c for r in range(rows) for c in range(cols)}
     G = nx.relabel_nodes(G, mapping)
     return G
+
+def build_ws(n, k, p_pct, seed):
+    """Watts-Strogatz スモールワールドグラフを生成する。
+    p_pct は 0〜100 の整数（パーセント）で受け取り内部で 0.0〜1.0 に変換する。"""
+    p = p_pct / 100.0
+    # k は n より小さい偶数でなければならない
+    k = min(k, n - 1)
+    if k % 2 != 0:
+        k = max(2, k - 1)
+    return nx.watts_strogatz_graph(n, k, p, seed=seed)
 
 def layout(G):
     n = G.number_of_nodes()
@@ -597,6 +639,10 @@ def do_generate(seed):
         rows, cols = st.session_state.grid_rows, st.session_state.grid_cols
         pos = {r * cols + c: (c, -r)
                for r in range(rows) for c in range(cols)}
+    elif model == "WS":
+        G = build_ws(n_nodes, st.session_state.ws_k,
+                     st.session_state.ws_p, seed)
+        pos = layout(G)
     else:
         if model == "BA Model":
             G = build_ba(n_nodes, n_links, seed)
