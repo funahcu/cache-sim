@@ -636,6 +636,27 @@ def render_sim_results(sim_results, target_type, node_states_final):
         + "<br>".join(lines) + "</div>",
         unsafe_allow_html=True)
 
+def render_sim_stats(sim_results):
+    """シミュレーション結果の平均ホップ数を表示する"""
+    hops = [len(r["path"]) - 1
+            for r in sim_results
+            if r["path"] is not None and len(r["path"]) > 0]
+    if not hops:
+        return
+    avg  = sum(hops) / len(hops)
+    mn   = min(hops)
+    mx   = max(hops)
+    hits = sum(1 for r in sim_results if r.get("hit_node") is not None)
+    st.markdown(
+        f"<div style='font-family:Space Mono,monospace;font-size:0.74rem;"
+        f"color:#8888aa;margin-top:.4rem;padding:.4rem .2rem;'>"
+        f"avg hops: <span style='color:#c4b5fd;font-weight:700;'>{avg:.2f}</span>"
+        f" &nbsp;|&nbsp; min: <span style='color:#c4b5fd;font-weight:700;'>{mn}</span>"
+        f" &nbsp;|&nbsp; max: <span style='color:#c4b5fd;font-weight:700;'>{mx}</span>"
+        f" &nbsp;|&nbsp; cache hits: <span style='color:#44ddaa;font-weight:700;'>{hits}</span>"
+        f" / {len(sim_results)} steps</div>",
+        unsafe_allow_html=True)
+
 def do_generate(seed):
     model  = st.session_state.model_type
     if model == "Grid":
@@ -781,6 +802,14 @@ if st.session_state.graph_drawn:
                         st.session_state.sim_order = list(range(n_total))
                     st.session_state.sim_order_source = "editor"
                     st.rerun()
+
+            n_editor_steps = len(st.session_state.sim_order)
+            st.markdown(
+                f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                f"color:#8888aa;margin:.2rem 0 .4rem;'>"
+                f"現在のエディタ: <span style='color:#c4b5fd;font-weight:700;'>"
+                f"{n_editor_steps} ステップ</span></p>",
+                unsafe_allow_html=True)
 
             with tab_editor:
                 order_df = pd.DataFrame({
@@ -1064,6 +1093,7 @@ if st.session_state.graph_drawn:
         with st.expander("📋 全ステップ表示", expanded=False):
             render_sim_results(st.session_state.sim_results, ttype,
                                st.session_state.node_states)
+            render_sim_stats(st.session_state.sim_results)
     else:
         render_paths(path_results, src, ttype, st.session_state.node_states)
 
