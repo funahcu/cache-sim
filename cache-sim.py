@@ -23,6 +23,8 @@ h1,h2,h3{font-family:'Syne',sans-serif!important;font-weight:800!important;lette
     letter-spacing:0.1em;text-transform:uppercase;}
 .badge-ba{background:#7c6af7;color:#fff;}
 .badge-sf{background:#06b6d4;color:#fff;}
+.badge-grid{background:#f59e0b;color:#fff;}
+.badge-ws{background:#10b981;color:#fff;}
 .info-card{background:#12121e;border:1px solid #2a2a3e;border-radius:10px;
     padding:.9rem 1.2rem;font-family:'Space Mono',monospace;font-size:0.76rem;
     color:#8888aa;margin-bottom:.8rem;}
@@ -79,7 +81,10 @@ def _init():
                 sim_order=[], sim_rand_steps=10, sim_gen_mode=0,
                 cache_hit_count={},
                 sim_cache_skip_src=False,
+                sim_step=0,
                 sim_cache_prob=100, # create_cache フラグ廃止、確率0%=無効
+                grid_rows=3, grid_cols=3,
+                ws_k=4, ws_p=10,
                 sim_order_source="editor")
     for k, v in defs.items():
         if k not in st.session_state:
@@ -90,36 +95,111 @@ _init()
 st.markdown("## 🕸️ Cache Simulator")
 st.markdown("<p style='font-family:Space Mono,monospace;font-size:0.78rem;"
             "color:#555577;margin-top:-.5rem;'>"
-            "BA / Scale-Free · Orig / Cache / Nothing · shortest path finder</p>",
+            "BA / Scale-Free / Grid · Orig / Cache / Nothing · shortest path finder</p>",
             unsafe_allow_html=True)
 st.divider()
 
-# ─── スライダー ──────────────────────────────────────────────
-c1, c2 = st.columns(2)
-with c1:
-    n_nodes = st.slider("Node count", 1, 20, 10, 1)
-with c2:
-    max_links = n_nodes*(n_nodes-1)//2 if n_nodes>1 else 1
-    min_links = n_nodes if n_nodes <= max_links else max_links
-    pv = max(min_links, min(st.session_state.get("_lv", min_links), max_links))
-    n_links = st.slider("Link count", min_links, max(min_links,max_links), pv, 1, key="_lv")
+# ─── ネットワーク設定（Draw後は折りたたみ） ─────────────────────
+with st.expander("⚙️ ネットワーク設定", expanded=not st.session_state.graph_drawn):
+    st.markdown("")
+    cb1, cb2, cb3, cb4, _ = st.columns([1,1,1,1,1])
+    with cb1:
+        if st.button("⬡  BA Model", use_container_width=True,
+                     type="primary" if st.session_state.model_type=="BA Model" else "secondary"):
+            st.session_state.model_type = "BA Model"
+            st.rerun()
+    with cb2:
+        if st.button("✦  Scale-Free", use_container_width=True,
+                     type="primary" if st.session_state.model_type=="Scale-Free" else "secondary"):
+            st.session_state.model_type = "Scale-Free"
+            st.rerun()
+    with cb3:
+        if st.button("⊞  Grid", use_container_width=True,
+                     type="primary" if st.session_state.model_type=="Grid" else "secondary"):
+            st.session_state.model_type = "Grid"
+            st.rerun()
+    with cb4:
+        if st.button("〜  WS", use_container_width=True,
+                     type="primary" if st.session_state.model_type=="WS" else "secondary"):
+            st.session_state.model_type = "WS"
+            st.rerun()
 
-# ─── モデルボタン ────────────────────────────────────────────
-st.markdown("")
-cb1, cb2, _ = st.columns([1,1,2])
-with cb1:
-    if st.button("⬡  BA Model", use_container_width=True,
-                 type="primary" if st.session_state.model_type=="BA Model" else "secondary"):
-        st.session_state.model_type = "BA Model"
-with cb2:
-    if st.button("✦  Scale-Free", use_container_width=True,
-                 type="primary" if st.session_state.model_type=="Scale-Free" else "secondary"):
-        st.session_state.model_type = "Scale-Free"
+    bc = {"BA Model": "badge-ba", "Scale-Free": "badge-sf",
+          "Grid": "badge-grid", "WS": "badge-ws"}.get(
+         st.session_state.model_type, "badge-ba")
+    st.markdown(f"<p style='margin-top:.4rem;'>現在のモデル: "
+                f"<span class='model-badge {bc}'>{st.session_state.model_type}</span></p>",
+                unsafe_allow_html=True)
 
-bc = "badge-ba" if st.session_state.model_type=="BA Model" else "badge-sf"
-st.markdown(f"<p style='margin-top:.4rem;'>現在のモデル: "
-            f"<span class='model-badge {bc}'>{st.session_state.model_type}</span></p>",
-            unsafe_allow_html=True)
+    is_grid = st.session_state.model_type == "Grid"
+    is_ws   = st.session_state.model_type == "WS"
+    if not is_grid and not is_ws:
+        c1, c2 = st.columns(2)
+        with c1:
+            n_nodes = st.slider("Node count", 1, 20, 10, 1)
+        with c2:
+            max_links = n_nodes*(n_nodes-1)//2 if n_nodes>1 else 1
+            min_links = n_nodes if n_nodes <= max_links else max_links
+            pv = max(min_links, min(st.session_state.get("_lv", min_links), max_links))
+            n_links = st.slider("Link count", min_links, max(min_links,max_links),
+                                pv, 1, key="_lv")
+    elif is_grid:
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            grid_rows = st.slider("行数 (Rows)", 2, 10,
+                                  st.session_state.grid_rows, 1, key="_gr")
+            st.session_state.grid_rows = grid_rows
+        with gc2:
+            grid_cols = st.slider("列数 (Cols)", 2, 10,
+                                  st.session_state.grid_cols, 1, key="_gc")
+            st.session_state.grid_cols = grid_cols
+        n_nodes = grid_rows * grid_cols
+        n_links = ((grid_rows - 1) * grid_cols
+                   + grid_rows * (grid_cols - 1))
+    else:  # is_ws
+        ws1, ws2, ws3 = st.columns(3)
+        with ws1:
+            n_nodes = st.slider("Node count", 4, 20, 10, 1, key="_ws_n")
+        with ws2:
+            ws_k = st.select_slider(
+                "近隣数 k", options=[2, 4, 6, 8],
+                value=st.session_state.ws_k, key="_ws_k",
+                format_func=lambda x: f"k={x}")
+            st.session_state.ws_k = ws_k
+        with ws3:
+            ws_p = st.select_slider(
+                "rewiring p",
+                options=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+                value=st.session_state.ws_p, key="_ws_p",
+                format_func=lambda x: f"p={x/100:.1f}")
+            st.session_state.ws_p = ws_p
+        k_eff = min(ws_k, n_nodes - 1)
+        if k_eff % 2 != 0:
+            k_eff = max(2, k_eff - 1)
+        n_links = n_nodes * k_eff // 2
+
+    st.divider()
+    grid_info = (f'&nbsp;|&nbsp; Grid: <span>{st.session_state.grid_rows}'
+                 f'×{st.session_state.grid_cols}</span>') if is_grid else ''
+    ws_info   = (f'&nbsp;|&nbsp; k: <span>{st.session_state.ws_k}</span>'
+                 f'&nbsp;|&nbsp; p: <span>{st.session_state.ws_p/100:.1f}</span>') 
+
+    st.markdown(f"""<div class="info-card">
+        Nodes: <span>{n_nodes}</span> &nbsp;|&nbsp;
+        Links: <span>{n_links}</span> &nbsp;|&nbsp;
+        Model: <span>{st.session_state.model_type}</span>
+        {grid_info}{ws_info}</div>""", unsafe_allow_html=True)
+
+    db1, db2 = st.columns([2,1])
+    with db1:
+        draw_clicked = st.button("▶  Draw Network", type="primary", use_container_width=True)
+    with db2:
+        regen_clicked = st.button("🔀  Re-generate", use_container_width=True,
+                                  disabled=not st.session_state.graph_drawn
+                                  or is_grid)
+
+    st.markdown('<p class="hint">💡 ノードクリック: Nothing → Orig → Cache → Nothing …　'
+                '｜　Re-generate: 同条件で別グラフを生成</p>', unsafe_allow_html=True)
 
 # ─── グラフ生成 ──────────────────────────────────────────────
 def _adjust_edges(G, target, seed):
@@ -161,6 +241,23 @@ def build_sf(n, target, seed):
             except: pass
     G = best_G.copy() if best_G else nx.path_graph(n)
     return _adjust_edges(G, target, seed)
+
+def build_grid(rows, cols):
+    G = nx.grid_2d_graph(rows, cols)
+    # ノードを 0..n-1 の整数に付け替える
+    mapping = {(r, c): r * cols + c for r in range(rows) for c in range(cols)}
+    G = nx.relabel_nodes(G, mapping)
+    return G
+
+def build_ws(n, k, p_pct, seed):
+    """Watts-Strogatz スモールワールドグラフを生成する。
+    p_pct は 0〜100 の整数（パーセント）で受け取り内部で 0.0〜1.0 に変換する。"""
+    p = p_pct / 100.0
+    # k は n より小さい偶数でなければならない
+    k = min(k, n - 1)
+    if k % 2 != 0:
+        k = max(2, k - 1)
+    return nx.watts_strogatz_graph(n, k, p, seed=seed)
 
 def layout(G):
     n = G.number_of_nodes()
@@ -251,15 +348,19 @@ def run_simulation(edges, n_total, initial_states, target_type,
                             "hit_count_snap": hit_count.copy()})
     return sim_results, working, hit_count
 
-def replay_states(initial_states, sim_results, create_cache, up_to_step):
-    """initial_states + sim_results から up_to_step 実行後の状態を再現する"""
+def replay_states(initial_states, sim_results, up_to_step):
+    """sim_results の newly_cached を使って up_to_step 時点の状態を再現する。
+    cache_skip_src・cache_prob の影響を正確に反映できる。
+    up_to_step=-1 なら initial_states をそのまま返す。"""
+    if up_to_step < 0:
+        return initial_states.copy(), {}
     working = initial_states.copy()
+    snap = {}
     for r in sim_results[:up_to_step + 1]:
-        if create_cache and r["path"]:
-            for nid in r["path"]:
-                if working[nid] == "Nothing":
-                    working[nid] = "Cache"
-    return working
+        for nid in r.get("cached", []):
+            working[nid] = "Cache"
+        snap = r.get("hit_count_snap", {})
+    return working, snap
 
 # ─── Plotly図 ────────────────────────────────────────────────
 def make_fig(edges, pos, node_states, n_total, model_name,
@@ -535,28 +636,44 @@ def render_sim_results(sim_results, target_type, node_states_final):
         + "<br>".join(lines) + "</div>",
         unsafe_allow_html=True)
 
-# ─── Draw / Regen ─────────────────────────────────────────────
-st.divider()
-st.markdown(f"""<div class="info-card">
-    Nodes: <span>{n_nodes}</span> &nbsp;|&nbsp;
-    Links: <span>{n_links}</span> &nbsp;|&nbsp;
-    Model: <span>{st.session_state.model_type}</span>
-    </div>""", unsafe_allow_html=True)
-
-db1, db2 = st.columns([2,1])
-with db1:
-    draw_clicked = st.button("▶  Draw Network", type="primary", use_container_width=True)
-with db2:
-    regen_clicked = st.button("🔀  Re-generate", use_container_width=True,
-                              disabled=not st.session_state.graph_drawn)
-
-st.markdown('<p class="hint">💡 ノードクリック: Nothing → Orig → Cache → Nothing …　'
-            '｜　Re-generate: 同条件で別グラフを生成</p>', unsafe_allow_html=True)
+def render_sim_stats(sim_results):
+    """シミュレーション結果の平均ホップ数を表示する"""
+    hops = [len(r["path"]) - 1
+            for r in sim_results
+            if r["path"] is not None and len(r["path"]) > 0]
+    if not hops:
+        return
+    avg  = sum(hops) / len(hops)
+    mn   = min(hops)
+    mx   = max(hops)
+    hits = sum(1 for r in sim_results if r.get("hit_node") is not None)
+    st.markdown(
+        f"<div style='font-family:Space Mono,monospace;font-size:0.74rem;"
+        f"color:#8888aa;margin-top:.4rem;padding:.4rem .2rem;'>"
+        f"avg hops: <span style='color:#c4b5fd;font-weight:700;'>{avg:.2f}</span>"
+        f" &nbsp;|&nbsp; min: <span style='color:#c4b5fd;font-weight:700;'>{mn}</span>"
+        f" &nbsp;|&nbsp; max: <span style='color:#c4b5fd;font-weight:700;'>{mx}</span>"
+        f" &nbsp;|&nbsp; cache hits: <span style='color:#44ddaa;font-weight:700;'>{hits}</span>"
+        f" / {len(sim_results)} steps</div>",
+        unsafe_allow_html=True)
 
 def do_generate(seed):
-    model = st.session_state.model_type
-    G = build_ba(n_nodes,n_links,seed) if model=="BA Model" else build_sf(n_nodes,n_links,seed)
-    pos = layout(G)
+    model  = st.session_state.model_type
+    if model == "Grid":
+        G = build_grid(st.session_state.grid_rows, st.session_state.grid_cols)
+        rows, cols = st.session_state.grid_rows, st.session_state.grid_cols
+        pos = {r * cols + c: (c, -r)
+               for r in range(rows) for c in range(cols)}
+    elif model == "WS":
+        G = build_ws(n_nodes, st.session_state.ws_k,
+                     st.session_state.ws_p, seed)
+        pos = layout(G)
+    else:
+        if model == "BA Model":
+            G = build_ba(n_nodes, n_links, seed)
+        else:
+            G = build_sf(n_nodes, n_links, seed)
+        pos = layout(G)
     st.session_state.graph_edges  = list(G.edges())
     st.session_state.graph_pos    = {i:list(pos[i]) for i in G.nodes()}
     st.session_state.node_states  = {i:"Nothing" for i in G.nodes()}
@@ -621,30 +738,6 @@ if st.session_state.graph_drawn:
                              index=TARGET_OPTIONS.index(st.session_state.target_type),
                              key="_tt")
         st.session_state.target_type = ttype
-    with cc3:
-        st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            if st.button("All Orig", use_container_width=True):
-                for k in st.session_state.node_states: st.session_state.node_states[k]="Orig"
-                st.session_state.sim_results    = []
-                st.session_state.cache_hit_count = {}
-                st.rerun()
-        with col_b:
-            if st.button("All None", use_container_width=True):
-                for k in st.session_state.node_states: st.session_state.node_states[k]="Nothing"
-                st.session_state.sim_results    = []
-                st.session_state.cache_hit_count = {}
-                st.rerun()
-        with col_c:
-            if st.button("Src→None", use_container_width=True,
-                         disabled=not st.session_state.sim_order):
-                for nid in set(st.session_state.sim_order):
-                    if st.session_state.node_states.get(nid) not in ("Orig",):
-                        st.session_state.node_states[nid] = "Nothing"
-                st.session_state.sim_results     = []
-                st.session_state.cache_hit_count = {}
-                st.rerun()
 
     # Dynamic モードのオプションと実行ボタン
     if src == "all_dynamic":
@@ -665,6 +758,22 @@ if st.session_state.graph_drawn:
                 "color:#8888aa;margin:.6rem 0 .2rem;'>アクセスパターン</p>",
                 unsafe_allow_html=True)
 
+            # sim_order が空ならデフォルトで初期化
+            if not st.session_state.sim_order:
+                st.session_state.sim_order = list(range(n_total))
+            
+            # ── 現在の有効ソース表示 ──────────────────────────────
+            src_label = "🎲 エディタ" if st.session_state.sim_order_source == "editor" else "📋 テキスト貼付"
+            st.markdown(
+                f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                f"color:#8888aa;margin:.2rem 0 .4rem;'>"
+                f"現在のアクセスパターン: "
+                f"<span style='color:#c4b5fd;font-weight:700;'>{src_label}</span></p>",
+                unsafe_allow_html=True)
+
+            # ── st.data_editor でパターン表示・編集 ──────────────
+            import pandas as pd  # noqa: PLC0415
+            tab_paste, tab_editor = st.tabs(["📋 テキスト貼付", "🎲 エディタ"])
             # ── デフォルト / ランダム生成 ────────────────────────
             pat_c1, pat_c2, pat_c3 = st.columns([1.2, 1, 1])
             with pat_c1:
@@ -691,23 +800,16 @@ if st.session_state.graph_drawn:
                             rng.integers(0, n_total, size=st.session_state.sim_rand_steps))
                     else:
                         st.session_state.sim_order = list(range(n_total))
+                    st.session_state.sim_order_source = "editor"
+                    st.rerun()
 
-            # sim_order が空ならデフォルトで初期化
-            if not st.session_state.sim_order:
-                st.session_state.sim_order = list(range(n_total))
-            
-            # ── 現在の有効ソース表示 ──────────────────────────────
-            src_label = "🎲 エディタ" if st.session_state.sim_order_source == "editor" else "📋 テキスト貼付"
+            n_editor_steps = len(st.session_state.sim_order)
             st.markdown(
                 f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
                 f"color:#8888aa;margin:.2rem 0 .4rem;'>"
-                f"現在のアクセスパターン: "
-                f"<span style='color:#c4b5fd;font-weight:700;'>{src_label}</span></p>",
+                f"現在のエディタ: <span style='color:#c4b5fd;font-weight:700;'>"
+                f"{n_editor_steps} ステップ</span></p>",
                 unsafe_allow_html=True)
-
-            # ── st.data_editor でパターン表示・編集 ──────────────
-            import pandas as pd  # noqa: PLC0415
-            tab_editor, tab_paste = st.tabs(["🎲 エディタ", "📋 テキスト貼付"])
 
             with tab_editor:
                 order_df = pd.DataFrame({
@@ -801,7 +903,40 @@ if st.session_state.graph_drawn:
             st.session_state.node_states        = final_states
             st.session_state.cache_hit_count    = {}   # まず0クリア
             st.session_state.cache_hit_count = hit_count
+            st.session_state.sim_step           = len(sim_results) - 1
             st.rerun()
+
+        # ── ステップスライダー ────────────────────────────────
+        if st.session_state.sim_results:
+            n_steps = len(st.session_state.sim_results)
+            sl_c1, sl_c2, sl_c3 = st.columns([1, 4, 1])
+            with sl_c1:
+                if st.button("◀", use_container_width=True, key="_step_back",
+                             disabled=st.session_state.sim_step <= 0):
+                    st.session_state.sim_step -= 1
+                    st.rerun()
+            with sl_c2:
+                new_step = st.slider(
+                    "ステップ", 0, n_steps - 1,
+                    value=st.session_state.sim_step)
+                if new_step != st.session_state.sim_step:
+                    st.session_state.sim_step = new_step
+                    st.rerun()
+                cur = st.session_state.sim_results[st.session_state.sim_step]
+                st.markdown(
+                    f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                    f"color:#c4b5fd;margin:-.4rem 0 .2rem;text-align:center;'>"
+                    f"Step {st.session_state.sim_step} &nbsp;·&nbsp; "
+                    f"★{cur['src']} → ◆{cur['tgt']}</p>",
+                    unsafe_allow_html=True)
+                if new_step != st.session_state.sim_step:
+                    st.session_state.sim_step = new_step
+                    st.rerun()
+            with sl_c3:
+                if st.button("▶", use_container_width=True, key="_step_fwd",
+                             disabled=st.session_state.sim_step >= n_steps - 1):
+                    st.session_state.sim_step += 1
+                    st.rerun()
 
     # 経路計算
     if src == "all_dynamic" and st.session_state.sim_results:
@@ -809,6 +944,17 @@ if st.session_state.graph_drawn:
         path_results    = [(r["src"], r["tgt"], r["path"])
                            for r in st.session_state.sim_results]
         highlight_paths = [r["path"] for r in st.session_state.sim_results if r["path"]]
+        # ステップ表示モード：該当ステップの経路のみハイライト
+        step_idx = st.session_state.sim_step
+        step_r   = st.session_state.sim_results[step_idx]
+        highlight_paths = [step_r["path"]] if step_r["path"] else []
+        path_results    = [(step_r["src"], step_r["tgt"], step_r["path"])]
+        # ステップ時点の node_states と hit_count を復元
+        step_states, step_snap = replay_states(
+            st.session_state.sim_initial_states,
+            st.session_state.sim_results,
+            step_idx)
+        st.session_state.cache_hit_count = step_snap
     else:
         path_results = shortest_paths(st.session_state.graph_edges, n_total,
                                       st.session_state.node_states, src, ttype)
@@ -821,13 +967,39 @@ if st.session_state.graph_drawn:
     if src == "all_dynamic" and not st.session_state.sim_results:
         highlight_paths = []
 
+    # グラフ描画に使う states を決定
+    display_states = (step_states
+                      if src == "all_dynamic" and st.session_state.sim_results
+                      else st.session_state.node_states)
+
     # 図
     fig = make_fig(st.session_state.graph_edges, pos_dict,
-                   st.session_state.node_states, n_total,
+                   display_states, n_total,
                    st.session_state.last_model, src, highlight_paths)
 
-    event = st.plotly_chart(fig, use_container_width=True,
-                            on_select="rerun", key="net_plot")
+    graph_col, btn_col = st.columns([4, 1.2])
+    with graph_col:
+        event = st.plotly_chart(fig, use_container_width=True,
+                                on_select="rerun", key="net_plot")
+    with btn_col:
+        if st.button("All Orig", use_container_width=True):
+            for k in st.session_state.node_states: st.session_state.node_states[k]="Orig"
+            st.session_state.sim_results     = []
+            st.session_state.cache_hit_count = {}
+            st.rerun()
+        if st.button("All None", use_container_width=True):
+            for k in st.session_state.node_states: st.session_state.node_states[k]="Nothing"
+            st.session_state.sim_results     = []
+            st.session_state.cache_hit_count = {}
+            st.rerun()
+        if st.button("Src→None", use_container_width=True,
+                     disabled=not st.session_state.sim_order):
+            for nid in set(st.session_state.sim_order):
+                if st.session_state.node_states.get(nid) not in ("Orig",):
+                    st.session_state.node_states[nid] = "Nothing"
+            st.session_state.sim_results     = []
+            st.session_state.cache_hit_count = {}
+            st.rerun()
 
     # クリック処理 — make_fig と同じtrace順を再現してnode_id逆引き
     if event and event.get("selection"):
@@ -912,8 +1084,16 @@ if st.session_state.graph_drawn:
 
     # 経路テキスト
     if src == "all_dynamic" and st.session_state.sim_results:
-        render_sim_results(st.session_state.sim_results, ttype,
-                           st.session_state.node_states)
+        # ステップ表示：そのステップ1件だけを render_sim_results で表示
+        render_sim_results(
+            [st.session_state.sim_results[st.session_state.sim_step]],
+            ttype,
+            display_states)
+        # 全ステップサマリを折りたたみで表示
+        with st.expander("📋 全ステップ表示", expanded=False):
+            render_sim_results(st.session_state.sim_results, ttype,
+                               st.session_state.node_states)
+            render_sim_stats(st.session_state.sim_results)
     else:
         render_paths(path_results, src, ttype, st.session_state.node_states)
 
