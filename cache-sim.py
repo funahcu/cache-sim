@@ -25,6 +25,14 @@ h1,h2,h3{font-family:'Syne',sans-serif!important;font-weight:800!important;lette
 .badge-sf{background:#06b6d4;color:#fff;}
 .badge-grid{background:#f59e0b;color:#fff;}
 .badge-ws{background:#10b981;color:#fff;}
+textarea{
+    color:#e8e8f0 !important;
+    background-color:#1a1a2e !important;
+    caret-color:#e8e8f0 !important;
+}
+textarea::placeholder{
+    color:#444466 !important;
+}
 .info-card{background:#12121e;border:1px solid #2a2a3e;border-radius:10px;
     padding:.9rem 1.2rem;font-family:'Space Mono',monospace;font-size:0.76rem;
     color:#8888aa;margin-bottom:.8rem;}
