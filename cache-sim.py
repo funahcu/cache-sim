@@ -93,6 +93,7 @@ def _init():
                 sim_cache_prob=100, # create_cache フラグ廃止、確率0%=無効
                 grid_rows=3, grid_cols=3,
                 ws_k=4, ws_p=10,
+                sim_cache_skip_src_always=False,
                 sim_order_source="editor")
     for k, v in defs.items():
         if k not in st.session_state:
@@ -318,7 +319,7 @@ def shortest_paths(edges, n_total, node_states, source, target_type):
 
 # ─── Dynamic シミュレーション ─────────────────────────────────
 def run_simulation(edges, n_total, initial_states, target_type,
-                   order, cache_skip_src=False, cache_prob=100):
+                   order, cache_skip_src=False, cache_prob=100, cache_skip_src_always=False):
     """
     order に従い各ノードを starting node として順に処理する。
     各ステップで最近傍ターゲットへの最短経路を求め、
@@ -333,6 +334,7 @@ def run_simulation(edges, n_total, initial_states, target_type,
     hit_count = {i: 0 for i in range(n_total)}
     count_hits = target_type in ("Cache", "Cache or Orig")
     rng = np.random.default_rng()
+    src_nodes_set = set(order) if cache_skip_src_always else set()
     for step, src in enumerate(order):
         targets = sorted([i for i,s in working.items()
                           if _is_target(s, target_type)])
@@ -342,8 +344,10 @@ def run_simulation(edges, n_total, initial_states, target_type,
         if path:
             for nid in path:
                 is_src = (nid == src)
+                is_any_src = (nid in src_nodes_set)
                 if working[nid] == "Nothing" \
                         and not (cache_skip_src and is_src) \
+                        and not is_any_src \
                         and rng.random() < cache_prob / 100.0:
                     working[nid] = "Cache"
                     newly_cached.append(nid)
@@ -751,9 +755,16 @@ if st.session_state.graph_drawn:
     if src == "all_dynamic":
         with st.expander("⚙️ Dynamic options", expanded=True):
             # ── Cache 作成オプション ──────────────────────────────
+            skip_always = st.session_state.sim_cache_skip_src_always
             st.session_state.sim_cache_skip_src = st.checkbox(
                 "起点ノードには Cache を作らない",
-                value=st.session_state.sim_cache_skip_src)
+                value=True if skip_always else st.session_state.sim_cache_skip_src,
+                disabled=skip_always)
+            st.session_state.sim_cache_skip_src_always = st.checkbox(
+                "起点ノードは中継点でも Cache を作らない（上のオプションを含む）",
+                value=st.session_state.sim_cache_skip_src_always)
+            if skip_always:
+                st.session_state.sim_cache_skip_src = True
             st.session_state.sim_cache_prob = st.select_slider(
                 "キャッシュ作成確率",
                 options=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
@@ -905,7 +916,8 @@ if st.session_state.graph_drawn:
                 st.session_state.node_states, ttype,
                 order,
                 cache_skip_src=st.session_state.sim_cache_skip_src,
-                cache_prob=st.session_state.sim_cache_prob)
+                cache_prob=st.session_state.sim_cache_prob,
+                cache_skip_src_always=st.session_state.sim_cache_skip_src_always)
             st.session_state.sim_results        = sim_results
             st.session_state.sim_initial_states = st.session_state.node_states.copy()
             st.session_state.node_states        = final_states
