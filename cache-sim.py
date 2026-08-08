@@ -94,6 +94,7 @@ def _init():
                 grid_rows=3, grid_cols=3,
                 ws_k=4, ws_p=10,
                 sim_cache_skip_src_always=False,
+                sim_deg_filter=1,
                 sim_order_source="editor")
     for k, v in defs.items():
         if k not in st.session_state:
@@ -755,16 +756,27 @@ if st.session_state.graph_drawn:
     if src == "all_dynamic":
         with st.expander("⚙️ Dynamic options", expanded=True):
             # ── Cache 作成オプション ──────────────────────────────
-            skip_always = st.session_state.sim_cache_skip_src_always
             st.session_state.sim_cache_skip_src = st.checkbox(
                 "起点ノードには Cache を作らない",
-                value=True if skip_always else st.session_state.sim_cache_skip_src,
-                disabled=skip_always)
-            st.session_state.sim_cache_skip_src_always = st.checkbox(
+                value=st.session_state.sim_cache_skip_src,
+                disabled=st.session_state.sim_cache_skip_src_always,
+                key="_skip_src_cb")
+
+            prev_always = st.session_state.sim_cache_skip_src_always
+            new_always = st.checkbox(
                 "起点ノードは中継点でも Cache を作らない（上のオプションを含む）",
-                value=st.session_state.sim_cache_skip_src_always)
-            if skip_always:
-                st.session_state.sim_cache_skip_src = True
+                value=prev_always,
+                key="_skip_src_always_cb")
+            if new_always != prev_always:
+                st.session_state.sim_cache_skip_src_always = new_always
+                if new_always:
+                    # ONにした → 上のチェックを強制ON
+                    st.session_state.sim_cache_skip_src = True
+                else:
+                    # OFFにした → 上のチェックを強制OFFに戻す
+                    st.session_state.sim_cache_skip_src = False
+                st.rerun()
+
             st.session_state.sim_cache_prob = st.select_slider(
                 "キャッシュ作成確率",
                 options=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
@@ -798,29 +810,78 @@ if st.session_state.graph_drawn:
             with pat_c1:
                 gen_mode = st.selectbox(
                     "生成モード",
-                    ["デフォルト (0→n順, 1回)", "ランダム生成"],
+                    ["デフォルト (0→n順, 1回)", "ランダム生成", "次数指定"],
                     index=st.session_state.sim_gen_mode,
                     key="_gen_mode", label_visibility="collapsed")
                 st.session_state.sim_gen_mode = \
-                    0 if gen_mode == "デフォルト (0→n順, 1回)" else 1
+                    {"デフォルト (0→n順, 1回)": 0,
+                     "ランダム生成": 1,
+                     "次数指定": 2}.get(gen_mode, 0)
             with pat_c2:
-                rand_steps = st.number_input(
-                    "アクセス回数", min_value=1, max_value=200,
-                    value=st.session_state.sim_rand_steps,
-                    step=1, key="_rand_steps",
-                    disabled=(gen_mode != "ランダム生成"),
-                    label_visibility="collapsed")
-                st.session_state.sim_rand_steps = int(rand_steps)
+                if gen_mode == "ランダム生成":
+                    rand_steps = st.number_input(
+                        "アクセス回数", min_value=1, max_value=200,
+                        value=st.session_state.sim_rand_steps,
+                        step=1, key="_rand_steps",
+                        label_visibility="collapsed")
+                    st.session_state.sim_rand_steps = int(rand_steps)
+                elif gen_mode == "次数指定":
+                    # 現在のグラフの次数を計算
+                    cur_deg = {i: 0 for i in range(n_total)}
+                    for u, v in st.session_state.graph_edges:
+                        cur_deg[u] += 1; cur_deg[v] += 1
+                    min_deg = min(cur_deg.values()) if cur_deg else 1
+                    max_deg = max(cur_deg.values()) if cur_deg else 1
+                    deg_val = max(min_deg,
+                                 min(st.session_state.sim_deg_filter, max_deg))
+                    deg_filter = st.slider(
+                        "最大次数 N", min_deg, max_deg, deg_val,
+                        key="_deg_filter", label_visibility="collapsed")
+                    st.session_state.sim_deg_filter = deg_filter
+                else:
+                    st.empty()
             with pat_c3:
                 if st.button("🎲 生成 / リセット", use_container_width=True):
                     if gen_mode == "ランダム生成":
                         rng = np.random.default_rng()
                         st.session_state.sim_order = list(
                             rng.integers(0, n_total, size=st.session_state.sim_rand_steps))
+                    elif gen_mode == "次数指定":
+                        cur_deg = {i: 0 for i in range(n_total)}
+                        for u, v in st.session_state.graph_edges:
+                            cur_deg[u] += 1; cur_deg[v] += 1
+                        matched = sorted(
+                            [i for i, d in cur_deg.items()
+                             if d <= st.session_state.sim_deg_filter])
+                        st.session_state.sim_order = matched if matched else list(range(n_total))
                     else:
                         st.session_state.sim_order = list(range(n_total))
                     st.session_state.sim_order_source = "editor"
                     st.rerun()
+
+            # 次数指定モードのプレビュー表示
+            if gen_mode == "次数指定":
+                cur_deg = {i: 0 for i in range(n_total)}
+                for u, v in st.session_state.graph_edges:
+                    cur_deg[u] += 1; cur_deg[v] += 1
+                matched = sorted(
+                    [i for i, d in cur_deg.items()
+                     if d <= st.session_state.sim_deg_filter])
+                if matched:
+                    st.markdown(
+                        f"<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                        f"color:#8888aa;margin:.1rem 0 .3rem;'>"
+                        f"次数 ≤ {st.session_state.sim_deg_filter} のノード: "
+                        f"<span style='color:#c4b5fd;font-weight:700;'>"
+                        f"{matched}</span> "
+                        f"({len(matched)} ノード / {len(matched)} ステップ)</p>",
+                        unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        "<p style='font-family:Space Mono,monospace;font-size:0.72rem;"
+                        "color:#cc4444;margin:.1rem 0 .3rem;'>"
+                        "該当ノードなし</p>",
+                        unsafe_allow_html=True)
 
             n_editor_steps = len(st.session_state.sim_order)
             st.markdown(
