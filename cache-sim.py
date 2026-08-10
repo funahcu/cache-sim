@@ -756,25 +756,30 @@ if st.session_state.graph_drawn:
     if src == "all_dynamic":
         with st.expander("⚙️ Dynamic options", expanded=True):
             # ── Cache 作成オプション ──────────────────────────────
-            st.session_state.sim_cache_skip_src = st.checkbox(
-                "起点ノードには Cache を作らない",
-                value=st.session_state.sim_cache_skip_src,
-                disabled=st.session_state.sim_cache_skip_src_always,
-                key="_skip_src_cb")
-
             prev_always = st.session_state.sim_cache_skip_src_always
+
+            if prev_always:
+                # 新オプションON時：上のチェックボックスをロック表示
+                st.markdown(
+                    "<p style='font-family:Space Mono,monospace;font-size:0.88rem;"
+                    "color:#c4b5fd;margin:.1rem 0 .1rem;'>"
+                    "☑ 起点ノードには Cache を作らない"
+                    "<span style='color:#444466;font-size:.72rem;'>"
+                    " （下のオプションにより自動ON）</span></p>",
+                    unsafe_allow_html=True)
+            else:
+                st.session_state.sim_cache_skip_src = st.checkbox(
+                    "起点ノードには Cache を作らない",
+                    value=st.session_state.sim_cache_skip_src,
+                    key="_skip_src_cb")
+
             new_always = st.checkbox(
                 "起点ノードは中継点でも Cache を作らない（上のオプションを含む）",
                 value=prev_always,
                 key="_skip_src_always_cb")
             if new_always != prev_always:
                 st.session_state.sim_cache_skip_src_always = new_always
-                if new_always:
-                    # ONにした → 上のチェックを強制ON
-                    st.session_state.sim_cache_skip_src = True
-                else:
-                    # OFFにした → 上のチェックを強制OFFに戻す
-                    st.session_state.sim_cache_skip_src = False
+                st.session_state.sim_cache_skip_src = True if new_always else False
                 st.rerun()
 
             st.session_state.sim_cache_prob = st.select_slider(
